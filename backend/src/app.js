@@ -43,12 +43,8 @@ function parseBaseUrl(value) {
   return parsed.origin;
 }
 
-export function createApp({
-  dbPath = process.env.DATA_FILE || 'data/links.sqlite',
-  baseUrl = process.env.BASE_URL,
-} = {}) {
+export function createApp({ store = createStore(), baseUrl = process.env.BASE_URL } = {}) {
   const publicOrigin = parseBaseUrl(baseUrl);
-  const store = createStore(dbPath);
   const app = express();
   app.locals.store = store;
   app.disable('x-powered-by');
@@ -70,15 +66,20 @@ export function createApp({
     return { ...link, shortUrl: `${origin}/s/${link.code}` };
   }
 
-  app.get('/api/health', (req, res) => {
+  app.get('/api/health', async (req, res) => {
+    try {
+      await store.check();
+    } catch {
+      return res.status(503).json({ error: 'Database is unavailable.' });
+    }
     res.json({ status: 'ok' });
   });
 
-  app.get('/api/links', (req, res) => {
-    res.json({ links: store.list().map((link) => serializeLink(link, req)) });
+  app.get('/api/links', async (req, res) => {
+    res.json({ links: (await store.list()).map((link) => serializeLink(link, req)) });
   });
 
-  app.post('/api/links', (req, res) => {
+  app.post('/api/links', async (req, res) => {
     const body = req.body;
     if (!body || Array.isArray(body) || typeof body !== 'object') {
       return res.status(400).json({ error: 'Send a JSON object containing a destination URL.' });
@@ -103,14 +104,14 @@ export function createApp({
 
     let link;
     if (customCode !== undefined) {
-      link = store.create({ code: customCode, url });
+      link = await store.create({ code: customCode, url });
       if (!link)
         return res
           .status(409)
           .json({ error: 'That custom code is already in use. Choose another.' });
     } else {
       for (let attempt = 0; attempt < 5 && !link; attempt += 1) {
-        link = store.create({ code: randomBytes(6).toString('base64url'), url });
+        link = await store.create({ code: randomBytes(6).toString('base64url'), url });
       }
       if (!link)
         return res
@@ -121,7 +122,7 @@ export function createApp({
     res.status(201).json({ link: serializeLink(link, req) });
   });
 
-  app.patch('/api/links/:code', (req, res) => {
+  app.patch('/api/links/:code', async (req, res) => {
     const body = req.body;
     if (!body || Array.isArray(body) || typeof body !== 'object') {
       return res.status(400).json({ error: 'Send a JSON object containing a destination URL.' });
@@ -134,23 +135,25 @@ export function createApp({
       });
     }
 
-    const link = store.update(req.params.code, url);
+    const link = await store.update(req.params.code, url);
     if (!link) {
       return res.status(404).json({ error: 'This short link does not exist.' });
     }
     res.json({ data: serializeLink(link, req) });
   });
 
-  app.delete('/api/links/:code', (req, res) => {
-    if (!store.delete(req.params.code)) {
+  app.delete('/api/links/:code', async (req, res) => {
+    if (!(await store.delete(req.params.code))) {
       return res.status(404).json({ error: 'This short link does not exist.' });
     }
     res.status(204).end();
   });
 
-  app.get('/s/:code', (req, res) => {
+  app.get('/s/:code', async (req, res) => {
     // HEAD requests inspect availability without counting a user visit.
-    const link = req.method === 'HEAD' ? store.get(req.params.code) : store.visit(req.params.code);
+    const link = await (req.method === 'HEAD'
+      ? store.get(req.params.code)
+      : store.visit(req.params.code));
     res.set('Cache-Control', 'no-store');
     if (!link)
       return res.status(404).type('text').send('This short link does not exist or was deleted.');
@@ -191,7 +194,8 @@ export function createApp({
     if (error instanceof URIError) {
       return res.status(400).json({ error: 'Invalid URL encoding.' });
     }
-    console.error('Request failed:', error);
+    // Do not log database error objects that may contain query data or connection details.
+    console.error('Request failed:', error.code || error.name || 'UnknownError');
     res.status(500).json({ error: 'An unexpected error occurred. Please try again.' });
   });
 

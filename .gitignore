@@ -2,6 +2,7 @@ node_modules/
 frontend/dist/
 data/
 .env
+.neon
 .env.*
 !.env.example
 .tools/

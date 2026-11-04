@@ -5,9 +5,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { createApp } from '../backend/src/app.js';
+import { createStore } from '../backend/src/store.js';
+import { testDatabase } from './helpers/database.js';
 
 async function startApp(t, options = {}) {
-  const app = createApp({ dbPath: ':memory:', baseUrl: null, ...options });
+  const { dataDir, ...appOptions } = options;
+  const database = await testDatabase(dataDir);
+  const app = createApp({ store: createStore(database), baseUrl: null, ...appOptions });
   const server = app.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const origin = `http://127.0.0.1:${server.address().port}`;
@@ -19,7 +23,7 @@ async function startApp(t, options = {}) {
     await new Promise((resolve, reject) => {
       server.close((error) => (error ? reject(error) : resolve()));
     });
-    app.locals.store.close();
+    await app.locals.store.close();
   }
 
   t.after(close);
@@ -361,8 +365,8 @@ test('oversized JSON requests return a bounded error response', async (t) => {
 
 test('links, destination updates, and click counts survive closing and reopening the database', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'linkforge-test-'));
-  const dbPath = join(directory, 'links.sqlite');
-  const api = await startApp(t, { dbPath });
+  const dataDir = join(directory, 'postgres');
+  const api = await startApp(t, { dataDir });
   const created = await api.create({
     url: 'https://example.com/persisted',
     customCode: 'persistent',
@@ -382,7 +386,7 @@ test('links, destination updates, and click counts survive closing and reopening
   await updated.json();
   await api.close();
 
-  const reopened = await startApp(t, { dbPath });
+  const reopened = await startApp(t, { dataDir });
   try {
     const { links } = await (await reopened.request('/api/links')).json();
     assert.equal(links.length, 1);

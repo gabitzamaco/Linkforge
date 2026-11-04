@@ -4,14 +4,16 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { createServer } from 'vite';
 import { createApp } from '../backend/src/app.js';
+import { createStore } from '../backend/src/store.js';
+import { testDatabase } from './helpers/database.js';
 import frontendConfig from '../frontend/vite.config.js';
 
 test('development serves React modules as JavaScript and proxies API calls and short links', async (t) => {
-  const app = createApp({ dbPath: ':memory:', baseUrl: null });
+  const app = createApp({ store: createStore(await testDatabase()), baseUrl: null });
   const backend = app.listen(0, '127.0.0.1');
   t.after(async () => {
     await new Promise((resolve) => backend.close(resolve));
-    app.locals.store.close();
+    await app.locals.store.close();
   });
   await once(backend, 'listening');
   const backendOrigin = `http://127.0.0.1:${backend.address().port}`;

@@ -1,6 +1,4 @@
-import { mkdirSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
+import { createDatabase } from './database.js';
 
 function toLink(row) {
   if (!row) return null;
@@ -9,67 +7,55 @@ function toLink(row) {
     id: row.code,
     code: row.code,
     url: row.url,
-    createdAt: row.created_at,
+    createdAt: new Date(row.created_at).toISOString(),
     clicks: row.clicks,
-    lastClickedAt: row.last_clicked_at,
+    lastClickedAt: row.last_clicked_at ? new Date(row.last_clicked_at).toISOString() : null,
   };
 }
 
-export function createStore(dbPath) {
-  const filename = dbPath === ':memory:' ? dbPath : resolve(dbPath);
-  if (filename !== ':memory:') mkdirSync(dirname(filename), { recursive: true });
-
-  const database = new DatabaseSync(filename);
-  database.exec(`
-    PRAGMA journal_mode = WAL;
-    PRAGMA busy_timeout = 5000;
-    CREATE TABLE IF NOT EXISTS links (
-      code TEXT PRIMARY KEY NOT NULL,
-      url TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      clicks INTEGER NOT NULL DEFAULT 0 CHECK (clicks >= 0),
-      last_clicked_at TEXT
-    );
-    CREATE INDEX IF NOT EXISTS links_created_at ON links (created_at DESC);
-  `);
-
-  const statements = {
-    list: database.prepare('SELECT * FROM links ORDER BY created_at DESC, rowid DESC'),
-    get: database.prepare('SELECT * FROM links WHERE code = ?'),
-    create: database.prepare(`
-      INSERT INTO links (code, url, created_at)
-      VALUES (?, ?, ?) ON CONFLICT(code) DO NOTHING
-    `),
-    update: database.prepare('UPDATE links SET url = ? WHERE code = ? RETURNING *'),
-    delete: database.prepare('DELETE FROM links WHERE code = ?'),
-    visit: database.prepare(`
-      UPDATE links SET clicks = clicks + 1, last_clicked_at = ?
-      WHERE code = ? RETURNING *
-    `),
-  };
-
+export function createStore(database = createDatabase()) {
   return {
-    list() {
-      return statements.list.all().map(toLink);
+    async check() {
+      await database.query('SELECT code FROM links LIMIT 1');
     },
-    get(code) {
-      return toLink(statements.get.get(code));
+    async list() {
+      const rows = await database.query(
+        'SELECT * FROM links ORDER BY created_at DESC, sort_id DESC',
+      );
+      return rows.map(toLink);
     },
-    create({ code, url }) {
-      const result = statements.create.run(code, url, new Date().toISOString());
-      return result.changes ? toLink(statements.get.get(code)) : null;
+    async get(code) {
+      const rows = await database.query('SELECT * FROM links WHERE code = $1', [code]);
+      return toLink(rows[0]);
     },
-    update(code, url) {
-      return toLink(statements.update.get(url, code));
+    async create({ code, url }) {
+      const rows = await database.query(
+        `INSERT INTO links (code, url, created_at) VALUES ($1, $2, $3)
+         ON CONFLICT (code) DO NOTHING RETURNING *`,
+        [code, url, new Date().toISOString()],
+      );
+      return toLink(rows[0]);
     },
-    delete(code) {
-      return statements.delete.run(code).changes > 0;
+    async update(code, url) {
+      const rows = await database.query('UPDATE links SET url = $1 WHERE code = $2 RETURNING *', [
+        url,
+        code,
+      ]);
+      return toLink(rows[0]);
     },
-    visit(code) {
-      return toLink(statements.visit.get(new Date().toISOString(), code));
+    async delete(code) {
+      const rows = await database.query('DELETE FROM links WHERE code = $1 RETURNING code', [code]);
+      return rows.length > 0;
     },
-    close() {
-      database.close();
+    async visit(code) {
+      // Increment in PostgreSQL to avoid lost counts from simultaneous redirects.
+      const rows = await database.query(
+        `UPDATE links SET clicks = clicks + 1, last_clicked_at = $1
+         WHERE code = $2 RETURNING *`,
+        [new Date().toISOString(), code],
+      );
+      return toLink(rows[0]);
     },
+    close: () => database.close(),
   };
 }
