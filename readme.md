@@ -71,10 +71,14 @@ backend/
   src/                Express routes, Neon queries, migrations, import logic, and server startup
   migrations/         Versioned Postgres SQL schema changes
 scripts/              Schema migration and one-time SQLite import commands
+api/index.js          Vercel Function entry point for the existing Express API
+vercel.json           Vite build output and API/short-link routing on Vercel
+.vercelignore         Excludes local credentials, databases, tools, and test files from uploads
 tests/
   api.test.js         HTTP integration and Postgres persistence tests
   database.test.js    Migration, import, concurrency, and failure handling tests
   helpers/            Embedded Postgres test database adapter
+  vercel.test.js      HTTPS short URL behavior for production and preview deployments
   dev.test.js         React module loading and development proxy regression test
 data/                 Original SQLite files retained for migration/backup; ignored by Git
 .env.example          Safe configuration examples
@@ -129,6 +133,23 @@ The app requires `DATABASE_URL` and a migrated schema; there is no fallback to a
 For manual verification, create a link, copy and open it, and refresh the dashboard to see the updated count. Click **Edit** on the link, enter a new destination, and choose **Save changes**. Open the same short URL to verify it redirects to the new destination. Canceling an edit should leave the saved destination unchanged. Finally, delete the link and check that its short URL returns `404`.
 
 ## Deployment and data
+
+### Vercel
+
+Deploy from the repository root. `vercel.json` selects the Vite framework, runs `npm run build`, and publishes `frontend/dist/`. The frontend is served as static files; requests to `/api/*` and `/s/*` run the existing Express application through `api/index.js` as a Vercel Function. The local server entry point is not used on Vercel.
+
+1. Import this repository into a Vercel project, or link it using the Vercel CLI.
+2. Add `DATABASE_URL` as a server-side **Production** environment variable using the pooled URL for the existing Neon main branch. Use an isolated Neon branch if enabling Preview deployments for development.
+3. Ensure the database migrations have been applied using the direct connection (`npm run db:migrate`). The deployment does not run migrations or import SQLite automatically.
+4. Deploy to Production. Verify `/api/health`, the dashboard, and a short-link redirect on the deployed domain.
+
+Production short URLs use HTTPS and Vercel's stable production domain (`VERCEL_PROJECT_PRODUCTION_URL`). Preview short URLs use their deployment domain (`VERCEL_URL`). `BASE_URL`, when explicitly set in Vercel, overrides these defaults; use your public HTTPS origin rather than a localhost URL. Enable Vercel's system environment variables so these hostnames are available at runtime.
+
+Only the pooled `DATABASE_URL` is needed by the running function. Keep the direct migration credential in your local or deployment tooling environment. `.vercelignore` excludes local environment files, SQLite backups, tools, and tests from source uploads. Vercel project metadata in `.vercel/` is ignored by Git.
+
+See [Vite on Vercel](https://vercel.com/docs/frameworks/frontend/vite) and [Vercel system environment variables](https://vercel.com/docs/environment-variables/system-environment-variables).
+
+### Application access and database operations
 
 This version has a shared, unauthenticated dashboard and API. Anyone who can reach it can list, create, or delete links. Before exposing it publicly, add authentication or access controls, rate limiting, and an abuse-handling policy. Redirect counts represent requests, including automated traffic; they are not unique-visitor analytics.
 

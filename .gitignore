@@ -3,6 +3,7 @@ frontend/dist/
 data/
 .env
 .neon
+.vercel/
 .env.*
 !.env.example
 .tools/

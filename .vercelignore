@@ -1,0 +1,15 @@
+.env*
+.neon
+.artifacts/
+.tools/
+.codex/
+.github/
+data/
+node_modules/
+frontend/dist/
+tests/
+scripts/
+backend/migrations/
+AGENTS.md
+*.log
+*.sqlite*
