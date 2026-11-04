@@ -23,6 +23,11 @@ function Icon({ name, size = 20, ...props }) {
       </>
     ),
     check: <path d="m5 12 4 4L19 6" />,
+    edit: (
+      <>
+        <path d="m16 3 5 5-12 12-6 1 1-6L16 3Zm-2 2 5 5" />
+      </>
+    ),
     trash: (
       <>
         <path d="M3 6h18M9 6V4h6v2M6 6l1 14h10l1-14M10 10v6m4-6v6" />
@@ -133,9 +138,16 @@ export default function App() {
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState('');
+  const [editTarget, setEditTarget] = useState(null);
+  const [editUrl, setEditUrl] = useState('');
+  const [updating, setUpdating] = useState(false);
+  const [editError, setEditError] = useState('');
   const urlInput = useRef(null);
   const modalRef = useRef(null);
   const deleteTriggerRef = useRef(null);
+  const editModalRef = useRef(null);
+  const editInputRef = useRef(null);
+  const editTriggerRef = useRef(null);
   const copyTimer = useRef(null);
   const loadingRef = useRef(true);
   const mutationRef = useRef(false);
@@ -182,6 +194,15 @@ export default function App() {
     if (deleteTarget) modalRef.current?.showModal();
     else modalRef.current?.close();
   }, [deleteTarget]);
+
+  useEffect(() => {
+    if (editTarget) {
+      editModalRef.current?.showModal();
+      editInputRef.current?.focus();
+    } else {
+      editModalRef.current?.close();
+    }
+  }, [editTarget]);
 
   async function handleSubmit(event) {
     event.preventDefault();
@@ -249,6 +270,46 @@ export default function App() {
     } finally {
       mutationRef.current = false;
       setDeleting(false);
+    }
+  }
+
+  function restoreEditFocus() {
+    requestAnimationFrame(() => {
+      if (editTriggerRef.current?.isConnected) editTriggerRef.current.focus();
+      else urlInput.current?.focus();
+    });
+  }
+
+  function closeEdit() {
+    if (updating) return;
+    editModalRef.current?.close();
+    setEditTarget(null);
+    setEditError('');
+    restoreEditFocus();
+  }
+
+  async function handleUpdate(event) {
+    event.preventDefault();
+    if (loadingRef.current || mutationRef.current || !editTarget) return;
+    mutationRef.current = true;
+    setUpdating(true);
+    setEditError('');
+    try {
+      const { data } = await request(`/api/links/${encodeURIComponent(editTarget.code)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: editUrl.trim() }),
+      });
+      setLinks((current) => current.map((link) => (link.code === editTarget.code ? data : link)));
+      editModalRef.current?.close();
+      setEditTarget(null);
+      setNotice('Link updated. Your short URL now redirects to the new destination.');
+      restoreEditFocus();
+    } catch (error) {
+      setEditError(error.message);
+    } finally {
+      mutationRef.current = false;
+      setUpdating(false);
     }
   }
 
@@ -372,7 +433,7 @@ export default function App() {
               <button
                 className="primary-button shorten-button"
                 type="submit"
-                disabled={loading || saving || deleting || !hasLoaded}
+                disabled={loading || saving || deleting || updating || !hasLoaded}
               >
                 {saving ? 'Creating…' : 'Shorten link'}
                 <Icon name="arrow" size={18} />
@@ -450,7 +511,7 @@ export default function App() {
                 type="button"
                 className={`icon-button refresh-button ${loading ? 'is-loading' : ''}`}
                 onClick={refreshLinks}
-                disabled={loading || saving || deleting}
+                disabled={loading || saving || deleting || updating}
                 aria-label="Refresh links"
                 title="Refresh links and click counts"
               >
@@ -465,7 +526,7 @@ export default function App() {
                 type="button"
                 className="text-button"
                 onClick={refreshLinks}
-                disabled={loading || saving || deleting}
+                disabled={loading || saving || deleting || updating}
               >
                 Try again <Icon name="refresh" size={15} />
               </button>
@@ -552,6 +613,22 @@ export default function App() {
                     <div className="row-actions">
                       <button
                         type="button"
+                        className="copy-button edit-button"
+                        disabled={loading || saving || deleting || updating}
+                        onClick={(event) => {
+                          editTriggerRef.current = event.currentTarget;
+                          setEditUrl(link.url);
+                          setEditError('');
+                          setNotice('');
+                          setEditTarget(link);
+                        }}
+                        aria-label={`Edit link ${link.code}`}
+                      >
+                        <Icon name="edit" size={15} />
+                        <span>Edit</span>
+                      </button>
+                      <button
+                        type="button"
                         className={`copy-button ${copiedCode === link.code ? 'copied' : ''}`}
                         onClick={() => handleCopy(link)}
                         aria-label={`Copy link ${link.code}`}
@@ -562,7 +639,7 @@ export default function App() {
                       <button
                         className="icon-button delete-button"
                         type="button"
-                        disabled={loading || saving || deleting}
+                        disabled={loading || saving || deleting || updating}
                         onClick={(event) => {
                           deleteTriggerRef.current = event.currentTarget;
                           setDeleteTarget(link);
@@ -626,6 +703,65 @@ export default function App() {
           </>
         )}
       </div>
+
+      <dialog
+        ref={editModalRef}
+        className="delete-dialog edit-dialog"
+        onCancel={(event) => {
+          event.preventDefault();
+          closeEdit();
+        }}
+        aria-labelledby="edit-title"
+        aria-describedby="edit-description"
+      >
+        <div className="dialog-icon edit-dialog-icon">
+          <Icon name="edit" size={24} />
+        </div>
+        <h2 id="edit-title">Edit destination</h2>
+        <p id="edit-description">
+          Choose a new destination for <strong>{editTarget?.shortUrl}</strong>. Your short URL and
+          click statistics stay the same.
+        </p>
+        <form onSubmit={handleUpdate} aria-busy={updating}>
+          <div className="field edit-destination-field">
+            <label htmlFor="edit-destination">New destination URL</label>
+            <div className="input-wrap">
+              <Icon name="link" size={19} />
+              <input
+                ref={editInputRef}
+                id="edit-destination"
+                type="url"
+                value={editUrl}
+                onChange={(event) => setEditUrl(event.target.value)}
+                required
+                maxLength={8192}
+                autoComplete="url"
+                disabled={updating}
+                aria-invalid={Boolean(editError)}
+                aria-describedby={editError ? 'edit-error' : 'edit-description'}
+              />
+            </div>
+          </div>
+          {editError && (
+            <p id="edit-error" className="error-message" role="alert">
+              {editError}
+            </p>
+          )}
+          <div className="dialog-actions">
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={closeEdit}
+              disabled={updating}
+            >
+              Cancel
+            </button>
+            <button className="primary-button" type="submit" disabled={updating}>
+              {updating ? 'Saving…' : 'Save changes'}
+            </button>
+          </div>
+        </form>
+      </dialog>
 
       <dialog
         ref={modalRef}

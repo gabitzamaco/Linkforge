@@ -1,6 +1,6 @@
 ﻿# Linkforge
 
-A URL shortener built with React, Express, and SQLite. Create short links with generated or custom codes, copy them from the dashboard, track redirect counts, and delete links you no longer need. Links and statistics survive server restarts.
+A URL shortener built with React, Express, and SQLite. Create short links with generated or custom codes, copy them from the dashboard, edit their destinations, track redirect counts, and delete links you no longer need. Links and statistics survive server restarts.
 
 ## Requirements
 
@@ -62,6 +62,7 @@ backend/
   src/                Express routes, SQLite storage, and server startup
 tests/
   api.test.js         HTTP integration and database persistence tests
+  dev.test.js         React module loading and development proxy regression test
 data/                 Local SQLite database; ignored by Git
 .env.example          Safe configuration examples
 AGENTS.md             Contributor guidelines
@@ -76,10 +77,13 @@ All API requests and responses use JSON except successful deletion (`204`). Erro
 | `GET`    | `/api/health`      | Return `{ "status": "ok" }`.                                                                                                                     |
 | `GET`    | `/api/links`       | Return `{ "links": [...] }`, newest first.                                                                                                       |
 | `POST`   | `/api/links`       | Create a link from `{ "url": "https://example.com", "customCode": "my-link" }`; `customCode` is optional. Return `201` with `{ "link": {...} }`. |
+| `PATCH`  | `/api/links/:code` | Update the destination with `{ "url": "https://example.com/new" }`. Return `200` with `{ "data": {...} }`; unknown codes return `404`.           |
 | `DELETE` | `/api/links/:code` | Delete a link and return `204`; unknown codes return `404`.                                                                                      |
 | `GET`    | `/s/:code`         | Record a click and return a `302` redirect; unknown codes return `404`.                                                                          |
 
 Each link includes `id`, `code`, `url`, `shortUrl`, `createdAt`, `clicks`, and nullable `lastClickedAt`. Destinations must be absolute HTTP or HTTPS URLs without embedded credentials. Custom codes are case-sensitive and contain 3–32 letters, digits, underscores, or hyphens. Invalid input returns `400`; a code already in use returns `409`. A `HEAD` request to a short URL checks the redirect without incrementing the click count.
+
+Updates change only the destination URL. The short code, creation date, and click statistics are preserved, and the existing short URL immediately redirects to the new destination. Updates use the same destination validation as creation; invalid updates return `400` without changing the saved link.
 
 PowerShell example:
 
@@ -88,14 +92,16 @@ $body = @{ url = 'https://example.com/articles'; customCode = 'articles' } | Con
 Invoke-RestMethod http://127.0.0.1:3000/api/links -Method Post -ContentType 'application/json' -Body $body
 Invoke-RestMethod http://127.0.0.1:3000/api/links
 curl.exe -I http://127.0.0.1:3000/s/articles
+$update = @{ url = 'https://example.com/new-articles' } | ConvertTo-Json
+Invoke-RestMethod http://127.0.0.1:3000/api/links/articles -Method Patch -ContentType 'application/json' -Body $update
 Invoke-RestMethod http://127.0.0.1:3000/api/links/articles -Method Delete
 ```
 
 ## Testing
 
-`npm test` starts real HTTP servers on ephemeral loopback ports and uses isolated in-memory or temporary SQLite databases. It covers creation, validation, custom-code conflicts, redirects and click counts, deletion, error handling, and persistence across restarts. Tests do not follow redirects to external destinations. No coverage threshold is configured.
+`npm test` starts real HTTP servers on ephemeral loopback ports and uses isolated in-memory or temporary SQLite databases. It covers creation, updates, validation, custom-code conflicts, redirects and click counts, deletion, error handling, and persistence across restarts. A development-server regression test verifies that React modules load as JavaScript while API and short-link requests reach Express. Tests do not follow redirects to external destinations. No coverage threshold is configured.
 
-For manual verification, create a link, copy and open it, refresh the dashboard to see the updated count, and delete it. Check that the deleted short URL returns `404`.
+For manual verification, create a link, copy and open it, and refresh the dashboard to see the updated count. Click **Edit** on the link, enter a new destination, and choose **Save changes**. Open the same short URL to verify it redirects to the new destination. Canceling an edit should leave the saved destination unchanged. Finally, delete the link and check that its short URL returns `404`.
 
 ## Deployment and data
 

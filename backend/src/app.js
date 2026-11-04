@@ -121,6 +121,26 @@ export function createApp({
     res.status(201).json({ link: serializeLink(link, req) });
   });
 
+  app.patch('/api/links/:code', (req, res) => {
+    const body = req.body;
+    if (!body || Array.isArray(body) || typeof body !== 'object') {
+      return res.status(400).json({ error: 'Send a JSON object containing a destination URL.' });
+    }
+
+    const url = parseDestination(body.url);
+    if (!url) {
+      return res.status(400).json({
+        error: 'Enter a valid HTTP or HTTPS URL without credentials (maximum 8192 characters).',
+      });
+    }
+
+    const link = store.update(req.params.code, url);
+    if (!link) {
+      return res.status(404).json({ error: 'This short link does not exist.' });
+    }
+    res.json({ data: serializeLink(link, req) });
+  });
+
   app.delete('/api/links/:code', (req, res) => {
     if (!store.delete(req.params.code)) {
       return res.status(404).json({ error: 'This short link does not exist.' });

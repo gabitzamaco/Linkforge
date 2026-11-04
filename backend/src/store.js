@@ -40,6 +40,7 @@ export function createStore(dbPath) {
       INSERT INTO links (code, url, created_at)
       VALUES (?, ?, ?) ON CONFLICT(code) DO NOTHING
     `),
+    update: database.prepare('UPDATE links SET url = ? WHERE code = ? RETURNING *'),
     delete: database.prepare('DELETE FROM links WHERE code = ?'),
     visit: database.prepare(`
       UPDATE links SET clicks = clicks + 1, last_clicked_at = ?
@@ -57,6 +58,9 @@ export function createStore(dbPath) {
     create({ code, url }) {
       const result = statements.create.run(code, url, new Date().toISOString());
       return result.changes ? toLink(statements.get.get(code)) : null;
+    },
+    update(code, url) {
+      return toLink(statements.update.get(url, code));
     },
     delete(code) {
       return statements.delete.run(code).changes > 0;

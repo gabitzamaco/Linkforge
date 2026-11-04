@@ -232,6 +232,92 @@ test('list returns multiple links in newest-first order', async (t) => {
   );
 });
 
+test('updating a destination preserves the short URL and statistics and changes the redirect', async (t) => {
+  const api = await startApp(t, { baseUrl: 'https://links.example.com' });
+  const created = await api.create({ url: 'https://example.com/original', customCode: 'editable' });
+  assert.equal(created.status, 201);
+  await created.json();
+  const visit = await api.request('/s/editable', { redirect: 'manual' });
+  assert.equal(visit.status, 302);
+  await visit.text();
+  const {
+    links: [original],
+  } = await (await api.request('/api/links')).json();
+
+  const url = 'https://example.com/updated?source=linkforge#details';
+  const response = await api.request('/api/links/editable', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url: `  ${url}  ` }),
+  });
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get('content-type'), /application\/json/);
+  assert.deepEqual(await response.json(), { data: { ...original, url } });
+  assert.deepEqual(await (await api.request('/api/links')).json(), {
+    links: [{ ...original, url }],
+  });
+
+  const redirect = await api.request('/s/editable', { redirect: 'manual' });
+  assert.equal(redirect.status, 302);
+  assert.equal(redirect.headers.get('location'), url);
+  await redirect.text();
+  const { links } = await (await api.request('/api/links')).json();
+  assert.equal(links[0].clicks, 2);
+});
+
+test('updating an unknown code returns 404 without creating or changing links', async (t) => {
+  const api = await startApp(t);
+  const created = await api.create({ url: 'https://example.com/kept', customCode: 'keep-me' });
+  assert.equal(created.status, 201);
+  const { link } = await created.json();
+
+  const response = await api.request('/api/links/missing', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url: 'https://example.com/replacement' }),
+  });
+  assert.equal(response.status, 404);
+  assert.match(response.headers.get('content-type'), /application\/json/);
+  assert.deepEqual(await response.json(), { error: 'This short link does not exist.' });
+  assert.deepEqual(await (await api.request('/api/links')).json(), { links: [link] });
+});
+
+test('invalid updates return 400 and preserve the existing destination', async (t) => {
+  const api = await startApp(t);
+  const created = await api.create({
+    url: 'https://example.com/original',
+    customCode: 'unchanged',
+  });
+  assert.equal(created.status, 201);
+  const { link } = await created.json();
+
+  for (const body of [
+    {},
+    null,
+    [],
+    { url: '' },
+    { url: '/relative' },
+    { url: 'https:example.com' },
+    { url: 'javascript:alert(1)' },
+    { url: 'https://user:password@example.com/' },
+    { url: 'https://example.com/\r\nInjected: yes' },
+    { url: 42 },
+    { url: null },
+    { url: ['https://example.com/'] },
+    { url: `https://example.com/${'x'.repeat(9000)}` },
+  ]) {
+    await assertError(
+      await api.request('/api/links/unchanged', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      }),
+      400,
+    );
+  }
+  assert.deepEqual(await (await api.request('/api/links')).json(), { links: [link] });
+});
+
 test('deleting a link removes it from the dashboard and disables the redirect', async (t) => {
   const api = await startApp(t);
   const created = await api.create({ url: 'https://example.com/', customCode: 'remove-me' });
@@ -273,7 +359,7 @@ test('oversized JSON requests return a bounded error response', async (t) => {
   assert.equal((await api.request('/api/health')).status, 200);
 });
 
-test('links and click counts survive closing and reopening the database', async (t) => {
+test('links, destination updates, and click counts survive closing and reopening the database', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'linkforge-test-'));
   const dbPath = join(directory, 'links.sqlite');
   const api = await startApp(t, { dbPath });
@@ -286,6 +372,14 @@ test('links and click counts survive closing and reopening the database', async 
   const visit = await api.request('/s/persistent', { redirect: 'manual' });
   assert.equal(visit.status, 302);
   await visit.text();
+  const updatedUrl = 'https://example.com/persisted-update';
+  const updated = await api.request('/api/links/persistent', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url: updatedUrl }),
+  });
+  assert.equal(updated.status, 200);
+  await updated.json();
   await api.close();
 
   const reopened = await startApp(t, { dbPath });
@@ -293,7 +387,7 @@ test('links and click counts survive closing and reopening the database', async 
     const { links } = await (await reopened.request('/api/links')).json();
     assert.equal(links.length, 1);
     assert.equal(links[0].id, original.id);
-    assert.equal(links[0].url, original.url);
+    assert.equal(links[0].url, updatedUrl);
     assert.equal(links[0].createdAt, original.createdAt);
     assert.equal(links[0].clicks, 1);
     assert.ok(Number.isFinite(Date.parse(links[0].lastClickedAt)));

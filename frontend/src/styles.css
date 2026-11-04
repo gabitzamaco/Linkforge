@@ -529,7 +529,7 @@ h2 {
 .table-head,
 .link-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 110px 80px 115px;
+  grid-template-columns: minmax(0, 1fr) 110px 80px 185px;
   gap: 12px;
   align-items: center;
 }
@@ -904,6 +904,24 @@ h2 {
 .delete-dialog p strong {
   color: #5d7050;
 }
+.edit-dialog {
+  width: 490px;
+}
+.edit-dialog-icon {
+  background: #eaf0dd;
+  color: #536c3d;
+}
+.edit-destination-field {
+  margin-top: 22px;
+}
+.edit-dialog .error-message {
+  color: #a35739;
+}
+.edit-dialog .primary-button {
+  min-height: 42px;
+  padding: 11px 17px;
+  font-size: 12px;
+}
 .dialog-actions {
   display: flex;
   justify-content: end;
@@ -978,7 +996,7 @@ h2 {
   }
   .table-head,
   .link-row {
-    grid-template-columns: minmax(0, 1fr) 95px 65px 110px;
+    grid-template-columns: minmax(0, 1fr) 95px 65px 185px;
     gap: 8px;
   }
 }
@@ -1044,7 +1062,7 @@ h2 {
   }
   .table-head,
   .link-row {
-    grid-template-columns: minmax(0, 1fr) 65px 105px;
+    grid-template-columns: minmax(0, 1fr) 65px 185px;
     gap: 10px;
   }
   .table-head > span:nth-child(2),
@@ -1293,6 +1311,9 @@ h2 {
     font-size: 9px;
     min-width: 64px;
     padding: 6px 9px;
+  }
+  .edit-button {
+    min-width: 54px;
   }
   .table-footer {
     font-size: 8px;
