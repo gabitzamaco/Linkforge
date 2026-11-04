@@ -1,53 +1,108 @@
-# Linkforge
+﻿# Linkforge
 
-A web application built with **Express.js** for the backend and **React.js** for the frontend...
+A URL shortener built with React, Express, and SQLite. Create short links with generated or custom codes, copy them from the dashboard, track redirect counts, and delete links you no longer need. Links and statistics survive server restarts.
 
-## Technology stack
+## Requirements
 
-- **React.js** — frontend user interface.
-- **Express.js** — backend server and API.
-- **Node.js** — runtime for the backend and development tools.
+- Node.js 24 or newer and npm. SQLite is provided by Node's built-in `node:sqlite` module; no separate database server is required.
+- Run commands from the repository root.
 
-## Prerequisites
+## Quick start
 
-- Node.js and npm installed locally. Use the Node.js version specified by the project when one is provided.
-- The frontend and backend source code, including their `package.json` files.
+```sh
+npm install
+npm run dev
+```
 
-## Getting started
+Open **http://127.0.0.1:5173**. The Vite development server forwards API and redirect requests to Express on port **3000**. The dashboard displays short URLs served by Express, so keep both servers running.
 
-> This repository currently contains no application source or package manifests. The steps below are general guidance; exact directories, scripts, ports, and environment variables must be documented once the source is added.
+For optional configuration, copy `.env.example` to `.env` before starting:
 
-1. Open a terminal in each application directory containing a `package.json` file and install its dependencies:
+```powershell
+Copy-Item .env.example .env
+```
 
-   ```sh
-   npm install
-   ```
+| Variable    | Default             | Purpose                                                                        |
+| ----------- | ------------------- | ------------------------------------------------------------------------------ |
+| `PORT`      | `3000`              | Express listening port. Keep port 3000 for the default Vite proxy.             |
+| `HOST`      | `127.0.0.1`         | Express bind address; use `0.0.0.0` only when network access is intended.      |
+| `DATA_FILE` | `data/links.sqlite` | SQLite file path. Its directory is created automatically.                      |
+| `BASE_URL`  | Request origin      | Public origin for generated links; set an HTTPS origin behind a reverse proxy. |
 
-2. Check the available scripts in each directory:
+The example file sets `BASE_URL=http://127.0.0.1:3000`. Keep `.env` and database files out of version control.
 
-   ```sh
-   npm run
-   ```
+## Commands
 
-3. Configure any environment variables required by the frontend and backend. If an `.env.example` file is provided, copy it to the environment file expected by that application and fill in the values. Keep secrets out of version control.
+| Command                | Purpose                                                          |
+| ---------------------- | ---------------------------------------------------------------- |
+| `npm run dev`          | Run the React frontend and API together with development reload. |
+| `npm run build`        | Create the production frontend in `frontend/dist/`.              |
+| `npm start`            | Run Express and serve the built frontend on port 3000.           |
+| `npm test`             | Run HTTP API integration tests using Node's test runner.         |
+| `npm run lint`         | Check JavaScript and JSX style and correctness.                  |
+| `npm run format:check` | Check formatting without modifying files.                        |
 
-4. Start the backend and frontend in separate terminals using the scripts defined in their respective `package.json` files. Common commands are `npm run dev` or `npm start`; use only those that the project defines.
+For a local production build:
 
-5. Open the frontend URL printed in the terminal. Ensure its API configuration points to the running Express server.
+```sh
+npm run build
+npm start
+```
 
-## Development
+Then open **http://127.0.0.1:3000**. Build again after changing the frontend.
 
-React handles the browser interface, while Express handles server-side requests. When adding an API feature, implement the Express route and connect the React interface to it using the project's API client or request pattern.
+## Project structure
 
-## Testing and production builds
+```text
+frontend/
+  index.html          Browser entry point
+  src/                React dashboard components and CSS
+  vite.config.js      Development proxy and frontend build
+backend/
+  src/                Express routes, SQLite storage, and server startup
+tests/
+  api.test.js         HTTP integration and database persistence tests
+data/                 Local SQLite database; ignored by Git
+.env.example          Safe configuration examples
+AGENTS.md             Contributor guidelines
+```
 
-Run the test, lint, and build scripts defined in each application's `package.json`. The exact commands and deployment process are not yet available in this repository.
+## API
 
-## Documentation to complete
+All API requests and responses use JSON except successful deletion (`204`). Errors return `{ "error": "Description" }`.
 
-- Application purpose and features.
-- Frontend and backend directory names and startup commands.
-- Required environment variables and local ports.
-- API endpoints and authentication requirements, if applicable.
-- Test commands, production build steps, and deployment instructions.
-- License information.
+| Method   | Path               | Behavior                                                                                                                                         |
+| -------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `GET`    | `/api/health`      | Return `{ "status": "ok" }`.                                                                                                                     |
+| `GET`    | `/api/links`       | Return `{ "links": [...] }`, newest first.                                                                                                       |
+| `POST`   | `/api/links`       | Create a link from `{ "url": "https://example.com", "customCode": "my-link" }`; `customCode` is optional. Return `201` with `{ "link": {...} }`. |
+| `DELETE` | `/api/links/:code` | Delete a link and return `204`; unknown codes return `404`.                                                                                      |
+| `GET`    | `/s/:code`         | Record a click and return a `302` redirect; unknown codes return `404`.                                                                          |
+
+Each link includes `id`, `code`, `url`, `shortUrl`, `createdAt`, `clicks`, and nullable `lastClickedAt`. Destinations must be absolute HTTP or HTTPS URLs without embedded credentials. Custom codes are case-sensitive and contain 3–32 letters, digits, underscores, or hyphens. Invalid input returns `400`; a code already in use returns `409`. A `HEAD` request to a short URL checks the redirect without incrementing the click count.
+
+PowerShell example:
+
+```powershell
+$body = @{ url = 'https://example.com/articles'; customCode = 'articles' } | ConvertTo-Json
+Invoke-RestMethod http://127.0.0.1:3000/api/links -Method Post -ContentType 'application/json' -Body $body
+Invoke-RestMethod http://127.0.0.1:3000/api/links
+curl.exe -I http://127.0.0.1:3000/s/articles
+Invoke-RestMethod http://127.0.0.1:3000/api/links/articles -Method Delete
+```
+
+## Testing
+
+`npm test` starts real HTTP servers on ephemeral loopback ports and uses isolated in-memory or temporary SQLite databases. It covers creation, validation, custom-code conflicts, redirects and click counts, deletion, error handling, and persistence across restarts. Tests do not follow redirects to external destinations. No coverage threshold is configured.
+
+For manual verification, create a link, copy and open it, refresh the dashboard to see the updated count, and delete it. Check that the deleted short URL returns `404`.
+
+## Deployment and data
+
+This version has a shared, unauthenticated dashboard and API. Anyone who can reach it can list, create, or delete links. Before exposing it publicly, add authentication or access controls, rate limiting, and an abuse-handling policy. Redirect counts represent requests, including automated traffic; they are not unique-visitor analytics.
+
+Use HTTPS and a persistent writable volume for `DATA_FILE` when deploying. Set `BASE_URL` to the public origin without a path, query, or fragment. Back up the database with a SQLite-aware backup procedure or stop the server before copying database files. Deleting a link is permanent. The backend stores destinations and redirects browsers; it does not fetch or inspect destination content.
+
+## Contributing
+
+Follow [AGENTS.md](AGENTS.md). Use two-space indentation, camelCase functions, and PascalCase React components. Keep commits focused with imperative messages such as `Add link validation`. Pull requests should describe the change and validation performed, link relevant issues, and include screenshots for UI changes.

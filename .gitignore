@@ -1,0 +1,14 @@
+node_modules/
+frontend/dist/
+data/
+.env
+.env.*
+!.env.example
+.tools/
+.artifacts/
+coverage/
+*.log
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+.DS_Store
