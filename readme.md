@@ -1,6 +1,6 @@
 # Linkforge
 
-A web application built with **Express.js** for the backend and **React.js** for the frontend..
+A web application built with **Express.js** for the backend and **React.js** for the frontend...
 
 ## Technology stack
 
