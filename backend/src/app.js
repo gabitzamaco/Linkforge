@@ -43,7 +43,11 @@ function parseBaseUrl(value) {
   return parsed.origin;
 }
 
-export function createApp({ store = createStore(), baseUrl = process.env.BASE_URL } = {}) {
+export function createApp({
+  store = createStore(),
+  baseUrl = process.env.BASE_URL,
+  routingQueryKeys = [],
+} = {}) {
   const publicOrigin = parseBaseUrl(baseUrl);
   const app = express();
   app.locals.store = store;
@@ -81,7 +85,10 @@ export function createApp({ store = createStore(), baseUrl = process.env.BASE_UR
 
   app.get('/api/links/:code/history', async (req, res) => {
     const days = req.query.days ?? '30';
-    if (Object.keys(req.query).some((key) => key !== 'days') || (days !== '7' && days !== '30')) {
+    if (
+      Object.keys(req.query).some((key) => key !== 'days' && !routingQueryKeys.includes(key)) ||
+      (days !== '7' && days !== '30')
+    ) {
       return res.status(400).json({ error: 'Choose a history range of 7 or 30 days.' });
     }
     const history = await store.history(req.params.code, Number(days));
