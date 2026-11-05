@@ -9,5 +9,7 @@ export function createVercelApp({ env = process.env, store } = {}) {
   return createApp({
     store,
     baseUrl: env.BASE_URL || (deploymentHost ? `https://${deploymentHost}` : null),
+    // Vercel forwards the named :path* rewrite capture in the query string.
+    routingQueryKeys: ['path'],
   });
 }

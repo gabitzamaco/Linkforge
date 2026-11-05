@@ -56,6 +56,21 @@ for (const { name, env, origin } of cases) {
     assert.equal(link.shortUrl, `${origin}/s/deployment-test`);
     const list = await (await fetch(`${localOrigin}/api/links`)).json();
     assert.equal(list.links[0].shortUrl, link.shortUrl);
+    for (const days of [undefined, '7', '30']) {
+      const query = new URLSearchParams({ path: 'links/deployment-test/history' });
+      if (days) query.set('days', days);
+      const response = await fetch(`${localOrigin}/api/links/deployment-test/history?${query}`);
+      assert.equal(response.status, 200);
+      const { history } = await response.json();
+      assert.equal(history.buckets.length, Number(days || 30));
+      assert.equal(history.periodClicks, 0);
+    }
+    for (const query of ['days=14', 'days=7&days=30', 'days[]=7', 'other=7']) {
+      const response = await fetch(
+        `${localOrigin}/api/links/deployment-test/history?path=links/deployment-test/history&${query}`,
+      );
+      assert.equal(response.status, 400);
+    }
     const redirect = await fetch(`${localOrigin}/s/deployment-test`, { redirect: 'manual' });
     assert.equal(redirect.status, 302);
     assert.equal(redirect.headers.get('location'), 'https://example.com/destination');
