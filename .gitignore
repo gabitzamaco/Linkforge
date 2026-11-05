@@ -9,6 +9,7 @@ data/
 .tools/
 .artifacts/
 coverage/
+.vitest/
 *.log
 *.sqlite
 *.sqlite-shm
