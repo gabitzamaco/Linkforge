@@ -79,6 +79,16 @@ export function createApp({ store = createStore(), baseUrl = process.env.BASE_UR
     res.json({ links: (await store.list()).map((link) => serializeLink(link, req)) });
   });
 
+  app.get('/api/links/:code/history', async (req, res) => {
+    const days = req.query.days ?? '30';
+    if (Object.keys(req.query).some((key) => key !== 'days') || (days !== '7' && days !== '30')) {
+      return res.status(400).json({ error: 'Choose a history range of 7 or 30 days.' });
+    }
+    const history = await store.history(req.params.code, Number(days));
+    if (!history) return res.status(404).json({ error: 'This short link does not exist.' });
+    res.json({ history });
+  });
+
   app.post('/api/links', async (req, res) => {
     const body = req.body;
     if (!body || Array.isArray(body) || typeof body !== 'object') {

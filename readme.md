@@ -1,6 +1,6 @@
 ﻿# Linkforge
 
-A URL shortener built with React, Express, and Neon serverless Postgres. Create short links with generated or custom codes, copy them from the dashboard, edit their destinations, track redirect counts, and delete links you no longer need. Links and statistics live in Postgres and survive server restarts.
+A URL shortener built with React, Express, and Neon serverless Postgres. Create short links with generated or custom codes, copy them from the dashboard, edit their destinations, view daily click history, and delete links you no longer need. Links and statistics live in Postgres and survive server restarts.
 
 ## Requirements
 
@@ -47,7 +47,9 @@ If the Neon CLI is already signed in, refresh this project's credentials with `n
 | `npm start`                                     | Run Express and serve the built frontend on port 3000.           |
 | `npm run db:migrate`                            | Apply versioned SQL migrations using the direct Neon URL.        |
 | `npm run db:import:sqlite -- data/links.sqlite` | Import an existing SQLite database and verify saved values.      |
-| `npm test`                                      | Run HTTP API integration tests using Node's test runner.         |
+| `npm test`                                      | Run backend integration and frontend component tests.            |
+| `npm run test:backend`                          | Run HTTP API and database tests using Node's test runner.        |
+| `npm run test:frontend`                         | Run React component tests using Vitest and jsdom.                |
 | `npm run lint`                                  | Check JavaScript and JSX style and correctness.                  |
 | `npm run format:check`                          | Check formatting without modifying files.                        |
 
@@ -65,8 +67,9 @@ Then open **http://127.0.0.1:3000**. Build again after changing the frontend.
 ```text
 frontend/
   index.html          Browser entry point
-  src/                React dashboard components and CSS
+  src/                React dashboard, history dialog, component tests, CSS, and test setup
   vite.config.js      Development proxy and frontend build
+  vitest.config.js    Isolated frontend component test configuration
 backend/
   src/                Express routes, Neon queries, migrations, import logic, and server startup
   migrations/         Versioned Postgres SQL schema changes
@@ -77,6 +80,7 @@ vercel.json           Vite build output and API/short-link routing on Vercel
 tests/
   api.test.js         HTTP integration and Postgres persistence tests
   database.test.js    Migration, import, concurrency, and failure handling tests
+  history.test.js     UTC click history, API, migration, atomicity, and persistence tests
   helpers/            Embedded Postgres test database adapter
   vercel.test.js      HTTPS short URL behavior for production and preview deployments
   dev.test.js         React module loading and development proxy regression test
@@ -89,20 +93,62 @@ AGENTS.md             Contributor guidelines
 
 All API requests and responses use JSON except successful deletion (`204`). Errors return `{ "error": "Description" }`.
 
-| Method   | Path               | Behavior                                                                                                                                         |
-| -------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `GET`    | `/api/health`      | Return `{ "status": "ok" }`.                                                                                                                     |
-| `GET`    | `/api/links`       | Return `{ "links": [...] }`, newest first.                                                                                                       |
-| `POST`   | `/api/links`       | Create a link from `{ "url": "https://example.com", "customCode": "my-link" }`; `customCode` is optional. Return `201` with `{ "link": {...} }`. |
-| `PATCH`  | `/api/links/:code` | Update the destination with `{ "url": "https://example.com/new" }`. Return `200` with `{ "data": {...} }`; unknown codes return `404`.           |
-| `DELETE` | `/api/links/:code` | Delete a link and return `204`; unknown codes return `404`.                                                                                      |
-| `GET`    | `/s/:code`         | Record a click and return a `302` redirect; unknown codes return `404`.                                                                          |
+| Method   | Path                       | Behavior                                                                                                                                         |
+| -------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `GET`    | `/api/health`              | Return `{ "status": "ok" }`.                                                                                                                     |
+| `GET`    | `/api/links`               | Return `{ "links": [...] }`, newest first.                                                                                                       |
+| `GET`    | `/api/links/:code/history` | Return daily UTC click history; optional `days=7` or `days=30` (default 30).                                                                     |
+| `POST`   | `/api/links`               | Create a link from `{ "url": "https://example.com", "customCode": "my-link" }`; `customCode` is optional. Return `201` with `{ "link": {...} }`. |
+| `PATCH`  | `/api/links/:code`         | Update the destination with `{ "url": "https://example.com/new" }`. Return `200` with `{ "data": {...} }`; unknown codes return `404`.           |
+| `DELETE` | `/api/links/:code`         | Delete a link and return `204`; unknown codes return `404`.                                                                                      |
+| `GET`    | `/s/:code`                 | Record a click and return a `302` redirect; unknown codes return `404`.                                                                          |
 
 Each link includes `id`, `code`, `url`, `shortUrl`, `createdAt`, `clicks`, and nullable `lastClickedAt`. Destinations must be absolute HTTP or HTTPS URLs without embedded credentials. Custom codes are case-sensitive and contain 3–32 letters, digits, underscores, or hyphens. Invalid input returns `400`; a code already in use returns `409`. A `HEAD` request to a short URL checks the redirect without incrementing the click count.
 
 Updates change only the destination URL. The short code, creation date, and click statistics are preserved, and the existing short URL immediately redirects to the new destination. Updates use the same destination validation as creation; invalid updates return `400` without changing the saved link.
 
-PowerShell example:
+## Click history
+
+Click a link's click count in the dashboard to open its history dialog. Choose **Last 7 days** or **Last 30 days** (the default), or press **Refresh** for updated counts. The dialog shows daily bars, the selected-period total, lifetime clicks, and an expandable daily-value table. All dates and day boundaries use **UTC**, including on devices in another timezone.
+
+The API accepts only the optional `days` query parameter with a single exact value of `7` or `30`. Invalid, repeated, or unsupported parameters return `400`; missing or deleted links return `404`. Responses use `Cache-Control: no-store`:
+
+```json
+{
+  "history": {
+    "code": "articles",
+    "timezone": "UTC",
+    "days": 7,
+    "asOf": "2026-11-05T12:00:00.000Z",
+    "trackingStartedAt": "2026-11-03T12:00:00.000Z",
+    "lifetimeClicks": 12,
+    "periodClicks": 3,
+    "buckets": [
+      { "date": "2026-10-30", "clicks": null, "partial": false },
+      { "date": "2026-10-31", "clicks": null, "partial": false },
+      { "date": "2026-11-01", "clicks": null, "partial": false },
+      { "date": "2026-11-02", "clicks": null, "partial": false },
+      { "date": "2026-11-03", "clicks": 1, "partial": true },
+      { "date": "2026-11-04", "clicks": 0, "partial": false },
+      { "date": "2026-11-05", "clicks": 2, "partial": true }
+    ]
+  }
+}
+```
+
+Buckets are chronological and include today plus the preceding 6 or 29 UTC dates. `null` means the date predates history tracking; `0` means a tracked date had no clicks. Today is partial, as is the first tracked day if tracking began after midnight. Existing lifetime totals are preserved, with no inferred daily history, so lifetime totals can exceed the sum of recorded days. Newly created or imported links begin history tracking at database insertion time; existing links begin at migration time.
+
+Each successful short-link `GET` records a redirect request, including bots and automated traffic. These are not unique-visitor counts. `HEAD`, history reads, and missing links never increment either counter. Lifetime and daily counters update atomically; a failed database write returns the existing error response without partially updating statistics. Editing a destination retains its history. Deleting a link permanently removes its daily history; reusing its alias starts fresh. Daily aggregates are retained until deletion; visitor identifiers, IP addresses, and individual click events are not collected.
+
+### Rolling out history to an existing deployment
+
+Rehearse migrations `003-click-history.sql` and `004-daily-clicks.sql` on an isolated Neon branch before production. The migration runner executes one SQL statement per file, using the existing direct migration connection.
+
+For production cutover, temporarily suspend redirect writes and stop old application instances, run `npm run db:migrate`, deploy this version, and resume traffic only after old writers are gone. Keep writes suspended between migration and deployment: the migration timestamp is the recorded start of history, and old instances would otherwise increment lifetime totals without daily counters. Health checks require both history schema additions. Do not roll back to an old writer while continuing to present the intervening history as complete.
+
+After deployment, verify `/api/health`, open a short link three times, and check that lifetime clicks and today's UTC bucket both increase by three. A `HEAD` request must change neither. Verify older unavailable dates, the 7/30-day selectors, refresh, mobile layout, and keyboard dismissal with focus returned to the click-count button.
+
+### API examples
 
 ```powershell
 $body = @{ url = 'https://example.com/articles'; customCode = 'articles' } | ConvertTo-Json
@@ -116,7 +162,9 @@ Invoke-RestMethod http://127.0.0.1:3000/api/links/articles -Method Delete
 
 ## Testing
 
-`npm test` starts real HTTP servers on ephemeral loopback ports and uses PGlite (embedded Postgres) with the same SQL migrations and queries as Neon. Tests use isolated memory or temporary disk storage and never use your Neon credentials. They cover creation, updates, validation, custom-code conflicts, redirects and click counts, deletion, error handling, persistence across restarts, repeatable migrations, and SQLite import verification. A development-server regression test verifies that React modules load as JavaScript while API and short-link requests reach Express. Tests do not follow redirects to external destinations. No coverage threshold is configured. These tests validate Postgres behavior locally; they do not test Neon network availability or account permissions.
+`npm test` runs both test suites. `npm run test:backend` starts real HTTP servers on ephemeral loopback ports and uses PGlite (embedded Postgres) with the same SQL migrations and queries as Neon. Tests use isolated memory or temporary disk storage and never use your Neon credentials. They cover creation, updates, validation, custom-code conflicts, redirects and click counts, deletion, error handling, persistence across restarts, repeatable migrations, and SQLite import verification. History tests cover UTC boundaries, simultaneous increments, failed-write rollback, tracking gaps, partial days, range validation, destination edits, cascade deletion, alias reuse, and disk persistence. A development-server regression test verifies that React modules load as JavaScript while API and short-link requests reach Express. Tests do not follow redirects to external destinations. These tests validate Postgres behavior locally; they do not test Neon network availability or account permissions.
+
+`npm run test:frontend` runs React Testing Library component tests in Vitest with jsdom. Tests cover opening history from a click count, range selection, accessible daily values, stale responses, cancellation, retry, refresh, no activity, deleted links, and focus restoration. The setup shims dialog opening and closing; native focus trapping and mobile layout require real browser verification. No coverage threshold is configured.
 
 ## Migrating existing SQLite data
 

@@ -26,7 +26,7 @@ export async function testDatabase(dataDir) {
   if (dataDir) return openDatabase(dataDir);
   shared ||= openDatabase();
   const database = await shared;
-  await database.query('TRUNCATE links RESTART IDENTITY');
+  await database.query('TRUNCATE link_click_daily, links RESTART IDENTITY');
   return { ...database, close: async () => {} };
 }
 

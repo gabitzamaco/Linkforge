@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import HistoryDialog from './HistoryDialog.jsx';
 
 function Icon({ name, size = 20, ...props }) {
   const paths = {
@@ -142,6 +143,7 @@ export default function App() {
   const [editUrl, setEditUrl] = useState('');
   const [updating, setUpdating] = useState(false);
   const [editError, setEditError] = useState('');
+  const [historyTarget, setHistoryTarget] = useState(null);
   const urlInput = useRef(null);
   const modalRef = useRef(null);
   const deleteTriggerRef = useRef(null);
@@ -605,11 +607,17 @@ export default function App() {
                       </div>
                     </div>
                     <span className="date-cell">{formatDate(link.createdAt)}</span>
-                    <span className="clicks-cell">
+                    <button
+                      type="button"
+                      className="clicks-cell history-trigger"
+                      aria-label={`View click history for ${link.code}`}
+                      title="View click history"
+                      onClick={() => setHistoryTarget(link)}
+                    >
                       <Icon name="pointer" size={14} />
                       {Number(link.clicks || 0).toLocaleString()}
                       <span className="mobile-click-label">clicks</span>
-                    </span>
+                    </button>
                     <div className="row-actions">
                       <button
                         type="button"
@@ -704,6 +712,13 @@ export default function App() {
         )}
       </div>
 
+      {historyTarget && (
+        <HistoryDialog
+          key={historyTarget.code}
+          link={historyTarget}
+          onClose={() => setHistoryTarget(null)}
+        />
+      )}
       <dialog
         ref={editModalRef}
         className="delete-dialog edit-dialog"
