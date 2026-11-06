@@ -1,7 +1,32 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import HistoryDialog from './HistoryDialog.jsx';
+import type { FormEvent, SVGProps } from 'react';
+import type {
+  CreateLinkRequest,
+  CreateLinkResponse,
+  Link,
+  LinksResponse,
+  UpdateLinkRequest,
+  UpdateLinkResponse,
+} from '../../shared/types.ts';
+import HistoryDialog from './HistoryDialog.tsx';
 
-function Icon({ name, size = 20, ...props }) {
+type IconName =
+  | 'link'
+  | 'arrow'
+  | 'copy'
+  | 'check'
+  | 'edit'
+  | 'trash'
+  | 'refresh'
+  | 'pointer'
+  | 'spark'
+  | 'search'
+  | 'external'
+  | 'close';
+
+type IconProps = SVGProps<SVGSVGElement> & { name: IconName; size?: number };
+
+function Icon({ name, size = 20, ...props }: IconProps) {
   const paths = {
     link: (
       <>
@@ -81,15 +106,28 @@ function Icon({ name, size = 20, ...props }) {
   );
 }
 
-async function request(path, options) {
+function request(path: string, options: RequestInit & { method: 'DELETE' }): Promise<null>;
+function request<T>(path: string, options?: RequestInit): Promise<T>;
+async function request(path: string, options?: RequestInit): Promise<unknown> {
   const response = await fetch(path, options);
   if (response.status === 204) return null;
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || 'Something went wrong. Please try again.');
+  const data: unknown = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error =
+      data && typeof data === 'object' && 'error' in data && typeof data.error === 'string'
+        ? data.error
+        : '';
+    throw new Error(error || 'Something went wrong. Please try again.');
+  }
+  // Successful JSON is described by the shared API contract; validation stays on the server.
   return data;
 }
 
-async function copyText(value) {
+function errorMessage(error: unknown, fallback = 'Something went wrong. Please try again.') {
+  return error instanceof Error ? error.message || fallback : fallback;
+}
+
+async function copyText(value: string) {
   if (navigator.clipboard?.writeText) {
     try {
       await navigator.clipboard.writeText(value);
@@ -108,16 +146,16 @@ async function copyText(value) {
   field.select();
   const copied = document.execCommand('copy');
   field.remove();
-  previousFocus?.focus();
+  if (previousFocus instanceof HTMLElement) previousFocus.focus();
   if (!copied)
     throw new Error('Could not copy automatically. Select and copy the short link instead.');
 }
 
-function displayUrl(value) {
+function displayUrl(value: string) {
   return value.replace(/^https?:\/\//, '').replace(/\/$/, '');
 }
 
-function formatDate(value) {
+function formatDate(value: string) {
   const date = new Date(value);
   return Number.isNaN(date.getTime())
     ? 'Just created'
@@ -125,7 +163,7 @@ function formatDate(value) {
 }
 
 export default function App() {
-  const [links, setLinks] = useState([]);
+  const [links, setLinks] = useState<Link[]>([]);
   const [url, setUrl] = useState('');
   const [customCode, setCustomCode] = useState('');
   const [loading, setLoading] = useState(true);
@@ -136,34 +174,36 @@ export default function App() {
   const [notice, setNotice] = useState('');
   const [search, setSearch] = useState('');
   const [copiedCode, setCopiedCode] = useState('');
-  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState<Link | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState('');
-  const [editTarget, setEditTarget] = useState(null);
+  const [editTarget, setEditTarget] = useState<Link | null>(null);
   const [editUrl, setEditUrl] = useState('');
   const [updating, setUpdating] = useState(false);
   const [editError, setEditError] = useState('');
-  const [historyTarget, setHistoryTarget] = useState(null);
-  const urlInput = useRef(null);
-  const modalRef = useRef(null);
-  const deleteTriggerRef = useRef(null);
-  const editModalRef = useRef(null);
-  const editInputRef = useRef(null);
-  const editTriggerRef = useRef(null);
-  const copyTimer = useRef(null);
+  const [historyTarget, setHistoryTarget] = useState<Link | null>(null);
+  const urlInput = useRef<HTMLInputElement | null>(null);
+  const modalRef = useRef<HTMLDialogElement | null>(null);
+  const deleteTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const editModalRef = useRef<HTMLDialogElement | null>(null);
+  const editInputRef = useRef<HTMLInputElement | null>(null);
+  const editTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const copyTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const loadingRef = useRef(true);
   const mutationRef = useRef(false);
   const loadSequence = useRef(0);
 
-  const loadLinks = useCallback(async (sequence, signal) => {
+  const loadLinks = useCallback(async (sequence: number, signal?: AbortSignal) => {
     try {
-      const data = await request('/api/links', { signal });
+      const data = await request<LinksResponse>('/api/links', { signal });
       if (sequence !== loadSequence.current) return;
       setLinks(data.links);
       setHasLoaded(true);
     } catch (error) {
       if (sequence !== loadSequence.current) return;
-      setLoadError(error.message || 'Cannot reach the server. Make sure the backend is running.');
+      setLoadError(
+        errorMessage(error, 'Cannot reach the server. Make sure the backend is running.'),
+      );
     } finally {
       if (sequence === loadSequence.current) {
         loadingRef.current = false;
@@ -206,7 +246,7 @@ export default function App() {
     }
   }, [editTarget]);
 
-  async function handleSubmit(event) {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (loadingRef.current || mutationRef.current || !hasLoaded) return;
     mutationRef.current = true;
@@ -214,13 +254,13 @@ export default function App() {
     setNotice('');
     setSaving(true);
     try {
-      const data = await request('/api/links', {
+      const data = await request<CreateLinkResponse>('/api/links', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           url: url.trim(),
           ...(customCode.trim() ? { customCode: customCode.trim() } : {}),
-        }),
+        } satisfies CreateLinkRequest),
       });
       setLinks((current) => [data.link, ...current]);
       setUrl('');
@@ -228,14 +268,14 @@ export default function App() {
       setNotice('Your short link is ready to share.');
       urlInput.current?.focus();
     } catch (error) {
-      setFormError(error.message);
+      setFormError(errorMessage(error));
     } finally {
       mutationRef.current = false;
       setSaving(false);
     }
   }
 
-  async function handleCopy(link) {
+  async function handleCopy(link: Link) {
     try {
       await copyText(link.shortUrl);
       setCopiedCode(link.code);
@@ -243,7 +283,7 @@ export default function App() {
       clearTimeout(copyTimer.current);
       copyTimer.current = setTimeout(() => setCopiedCode(''), 2500);
     } catch (error) {
-      setNotice(error.message);
+      setNotice(errorMessage(error));
     }
   }
 
@@ -268,7 +308,7 @@ export default function App() {
       setDeleteTarget(null);
       urlInput.current?.focus();
     } catch (error) {
-      setDeleteError(error.message);
+      setDeleteError(errorMessage(error));
     } finally {
       mutationRef.current = false;
       setDeleting(false);
@@ -290,25 +330,28 @@ export default function App() {
     restoreEditFocus();
   }
 
-  async function handleUpdate(event) {
+  async function handleUpdate(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (loadingRef.current || mutationRef.current || !editTarget) return;
     mutationRef.current = true;
     setUpdating(true);
     setEditError('');
     try {
-      const { data } = await request(`/api/links/${encodeURIComponent(editTarget.code)}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: editUrl.trim() }),
-      });
+      const { data } = await request<UpdateLinkResponse>(
+        `/api/links/${encodeURIComponent(editTarget.code)}`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: editUrl.trim() } satisfies UpdateLinkRequest),
+        },
+      );
       setLinks((current) => current.map((link) => (link.code === editTarget.code ? data : link)));
       editModalRef.current?.close();
       setEditTarget(null);
       setNotice('Link updated. Your short URL now redirects to the new destination.');
       restoreEditFocus();
     } catch (error) {
-      setEditError(error.message);
+      setEditError(errorMessage(error));
     } finally {
       mutationRef.current = false;
       setUpdating(false);

@@ -1,19 +1,24 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { expect, test, vi } from 'vitest';
-import App from './App.jsx';
-import HistoryDialog from './HistoryDialog.jsx';
+import type { HistoryDays, HistoryResponse, Link, LinkHistory } from '../../shared/types.ts';
+import App from './App.tsx';
+import HistoryDialog from './HistoryDialog.tsx';
 
-const link = {
+const link: Link = {
   id: 'example',
   code: 'example',
   shortUrl: 'https://go.example.com/s/example',
   url: 'https://example.com/',
   clicks: 11,
   createdAt: '2026-11-01T12:00:00Z',
+  lastClickedAt: null,
 };
 
-function historyData(days = 30, overrides = {}) {
+function historyData(
+  days: HistoryDays = 30,
+  overrides: Partial<LinkHistory> = {},
+): HistoryResponse {
   return {
     history: {
       code: link.code,
@@ -37,13 +42,13 @@ function historyData(days = 30, overrides = {}) {
   };
 }
 
-function response(data, status = 200) {
-  return { ok: status < 400, status, json: async () => data };
+function response(data: unknown, status = 200): Response {
+  return Response.json(data, { status });
 }
 
-function deferred() {
-  let resolve;
-  const promise = new Promise((done) => {
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((done) => {
     resolve = done;
   });
   return { promise, resolve };
@@ -51,14 +56,18 @@ function deferred() {
 
 test('click count opens history, switches range, restores focus and resets on reopening', async () => {
   const user = userEvent.setup();
-  const fetchMock = vi.fn(async (url) =>
-    response(url === '/api/links' ? { links: [link] } : historyData(url.endsWith('=7') ? 7 : 30)),
+  const fetchMock = vi.fn<typeof fetch>(async (url) =>
+    response(
+      url === '/api/links' ? { links: [link] } : historyData(String(url).endsWith('=7') ? 7 : 30),
+    ),
   );
   vi.stubGlobal('fetch', fetchMock);
   render(<App />);
   const trigger = await screen.findByRole('button', { name: 'View click history for example' });
   await user.click(trigger);
-  expect((await screen.findByRole('dialog', { name: 'Click history' })).open).toBe(true);
+  expect(
+    (await screen.findByRole<HTMLDialogElement>('dialog', { name: 'Click history' })).open,
+  ).toBe(true);
   await screen.findByText('Lifetime clicks');
   expect(fetchMock).toHaveBeenCalledWith('/api/links/example/history?days=30', expect.any(Object));
   await user.selectOptions(screen.getByLabelText('Show activity for'), '7');
@@ -67,7 +76,7 @@ test('click count opens history, switches range, restores focus and resets on re
   expect(screen.queryByRole('dialog', { name: 'Click history' })).toBeNull();
   expect(document.activeElement).toBe(trigger);
   await user.click(trigger);
-  expect(screen.getByLabelText('Show activity for').value).toBe('30');
+  expect(screen.getByLabelText<HTMLSelectElement>('Show activity for').value).toBe('30');
   const dialog = screen.getByRole('dialog', { name: 'Click history' });
   fireEvent(dialog, new Event('cancel', { bubbles: false, cancelable: true }));
   expect(screen.queryByRole('dialog', { name: 'Click history' })).toBeNull();
@@ -78,7 +87,7 @@ test('daily values expose UTC dates, untracked gaps, zero days and partial-day l
   const user = userEvent.setup();
   vi.stubGlobal(
     'fetch',
-    vi.fn(async (url) => response(historyData(url.endsWith('=7') ? 7 : 30))),
+    vi.fn<typeof fetch>(async (url) => response(historyData(String(url).endsWith('=7') ? 7 : 30))),
   );
   render(<HistoryDialog link={link} onClose={() => {}} />);
   await screen.findByRole('img', { name: 'Daily redirect requests in UTC' });
@@ -96,9 +105,9 @@ test('daily values expose UTC dates, untracked gaps, zero days and partial-day l
 
 test('old range responses cannot replace the current range even when abort is ignored', async () => {
   const user = userEvent.setup();
-  const oldRequest = deferred();
+  const oldRequest = deferred<Response>();
   const fetchMock = vi
-    .fn()
+    .fn<typeof fetch>()
     .mockImplementationOnce(() => oldRequest.promise)
     .mockResolvedValue(response(historyData(7, { lifetimeClicks: 77 })));
   vi.stubGlobal('fetch', fetchMock);
@@ -106,16 +115,16 @@ test('old range responses cannot replace the current range even when abort is ig
   expect(screen.getByRole('status').textContent).toBe('Loading click history…');
   await user.selectOptions(screen.getByLabelText('Show activity for'), '7');
   await screen.findByText('77');
-  expect(fetchMock.mock.calls[0][1].signal.aborted).toBe(true);
+  expect(fetchMock.mock.calls[0]?.[1]?.signal?.aborted).toBe(true);
   await act(async () => oldRequest.resolve(response(historyData(30, { lifetimeClicks: 99 }))));
   expect(screen.queryByText('99')).toBeNull();
   expect(screen.getByText('77')).toBeTruthy();
 });
 
 test('changing links aborts the old request and prevents its data appearing for the new link', async () => {
-  const pending = deferred();
+  const pending = deferred<Response>();
   const fetchMock = vi
-    .fn()
+    .fn<typeof fetch>()
     .mockImplementationOnce(() => pending.promise)
     .mockResolvedValue(response(historyData(30, { code: 'second', lifetimeClicks: 88 })));
   vi.stubGlobal('fetch', fetchMock);
@@ -123,7 +132,7 @@ test('changing links aborts the old request and prevents its data appearing for 
   const second = { ...link, code: 'second', shortUrl: 'https://go.example.com/s/second' };
   rerender(<HistoryDialog key="second" link={second} onClose={() => {}} />);
   await screen.findByText('88');
-  expect(fetchMock.mock.calls[0][1].signal.aborted).toBe(true);
+  expect(fetchMock.mock.calls[0]?.[1]?.signal?.aborted).toBe(true);
   await act(async () => pending.resolve(response(historyData(30, { lifetimeClicks: 99 }))));
   expect(screen.queryByText('99')).toBeNull();
   expect(screen.getByText(second.shortUrl)).toBeTruthy();
@@ -131,11 +140,11 @@ test('changing links aborts the old request and prevents its data appearing for 
 
 test('returning to a previous range shows loading rather than an old cached result', async () => {
   const user = userEvent.setup();
-  const pending = deferred();
+  const pending = deferred<Response>();
   const fetchMock = vi
-    .fn()
+    .fn<typeof fetch>()
     .mockResolvedValueOnce(response(historyData()))
-    .mockImplementation(() => pending.promise);
+    .mockImplementation(async () => (await pending.promise).clone());
   vi.stubGlobal('fetch', fetchMock);
   render(<HistoryDialog link={link} onClose={() => {}} />);
   await screen.findByText('Lifetime clicks');
@@ -148,12 +157,12 @@ test('returning to a previous range shows loading rather than an old cached resu
 });
 
 test('unmounting aborts work and ignores a late response', async () => {
-  const pending = deferred();
-  const fetchMock = vi.fn(() => pending.promise);
+  const pending = deferred<Response>();
+  const fetchMock = vi.fn<typeof fetch>(() => pending.promise);
   vi.stubGlobal('fetch', fetchMock);
   const { unmount } = render(<HistoryDialog link={link} onClose={() => {}} />);
   unmount();
-  expect(fetchMock.mock.calls[0][1].signal.aborted).toBe(true);
+  expect(fetchMock.mock.calls[0]?.[1]?.signal?.aborted).toBe(true);
   await act(async () => pending.resolve(response(historyData())));
   expect(screen.queryByRole('dialog')).toBeNull();
 });
@@ -161,7 +170,7 @@ test('unmounting aborts work and ignores a late response', async () => {
 test('failed loading can be retried and refreshing displays updated totals', async () => {
   const user = userEvent.setup();
   const fetchMock = vi
-    .fn()
+    .fn<typeof fetch>()
     .mockRejectedValueOnce(new TypeError('offline'))
     .mockResolvedValueOnce(response(historyData()))
     .mockResolvedValueOnce(response(historyData(30, { lifetimeClicks: 45 })));
@@ -178,7 +187,7 @@ test('failed loading can be retried and refreshing displays updated totals', asy
 test('no activity displays an empty message while retaining historical gaps', async () => {
   vi.stubGlobal(
     'fetch',
-    vi.fn(async () => response(historyData(30, { periodClicks: 0 }))),
+    vi.fn<typeof fetch>(async () => response(historyData(30, { periodClicks: 0 }))),
   );
   render(<HistoryDialog link={link} onClose={() => {}} />);
   await screen.findByText('No clicks recorded in this period.');
@@ -188,10 +197,10 @@ test('no activity displays an empty message while retaining historical gaps', as
 test('a deleted link has a specific message and no retry action', async () => {
   vi.stubGlobal(
     'fetch',
-    vi.fn(async () => response({ error: 'This short link does not exist.' }, 404)),
+    vi.fn<typeof fetch>(async () => response({ error: 'This short link does not exist.' }, 404)),
   );
   render(<HistoryDialog link={link} onClose={() => {}} />);
   expect((await screen.findByRole('alert')).textContent).toContain('This link no longer exists');
   expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
-  expect(screen.getByRole('button', { name: 'Refresh' }).disabled).toBe(true);
+  expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Refresh' }).disabled).toBe(true);
 });

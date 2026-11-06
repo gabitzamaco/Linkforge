@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createDatabase } from '../backend/src/database.js';
-import { createStore } from '../backend/src/store.js';
-import { createApp } from '../backend/src/app.js';
-import { importLinks } from '../backend/src/import-links.js';
-import { migrate } from '../backend/src/migrate.js';
-import { testDatabase } from './helpers/database.js';
+import { localOrigin, required } from './helpers/http.ts';
+import { createDatabase } from '../backend/src/database.ts';
+import { createStore } from '../backend/src/store.ts';
+import { createApp } from '../backend/src/app.ts';
+import { importLinks, parseLegacyLinks } from '../backend/src/import-links.ts';
+import { migrate } from '../backend/src/migrate.ts';
+import { testDatabase } from './helpers/database.ts';
 
 const legacyRow = {
   code: 'legacy-link',
@@ -14,6 +15,20 @@ const legacyRow = {
   clicks: 7,
   last_clicked_at: '2026-02-03T04:05:06.000Z',
 };
+
+test('SQLite source decoding preserves valid columns and rejects invalid column types', () => {
+  const nullable = { ...legacyRow, last_clicked_at: null };
+  assert.deepEqual(parseLegacyLinks([legacyRow, nullable]), [legacyRow, nullable]);
+  for (const invalid of [
+    { ...legacyRow, code: 12 },
+    { ...legacyRow, url: null },
+    { ...legacyRow, created_at: 12 },
+    { ...legacyRow, clicks: '7' },
+    { ...legacyRow, last_clicked_at: undefined },
+  ]) {
+    assert.throws(() => parseLegacyLinks([invalid]), /invalid link column types/);
+  }
+});
 
 test('database configuration requires a PostgreSQL URL without exposing credentials', () => {
   assert.throws(() => createDatabase(''), /DATABASE_URL is required/);
@@ -25,6 +40,7 @@ test('database configuration requires a PostgreSQL URL without exposing credenti
     assert.throws(
       () => createDatabase(url),
       (error) => {
+        assert.ok(error instanceof Error);
         assert.match(error.message, /valid PostgreSQL/);
         assert.doesNotMatch(error.message, /secret/);
         return true;
@@ -71,7 +87,7 @@ test('import rejects differing existing codes before inserting any source rows',
   );
   const links = await store.list();
   assert.equal(links.length, 1);
-  assert.equal(links[0].url, 'https://example.com/keep');
+  assert.equal(required(links[0]).url, 'https://example.com/keep');
 });
 
 test('concurrent visits increment the saved click count without lost updates', async () => {
@@ -79,18 +95,26 @@ test('concurrent visits increment the saved click count without lost updates', a
   const store = createStore(database);
   await store.create({ code: 'concurrent', url: 'https://example.com/' });
   await Promise.all(Array.from({ length: 20 }, () => store.visit('concurrent')));
-  assert.equal((await store.get('concurrent')).clicks, 20);
+  assert.equal(required(await store.get('concurrent')).clicks, 20);
 });
 
 test('health and async routes handle database failures without leaking details', async (t) => {
   const failure = async () => {
     throw new Error('private database credential');
   };
-  const app = createApp({ store: { check: failure, list: failure }, baseUrl: null });
+  const app = createApp({
+    store: { ...createStore(await testDatabase()), check: failure, list: failure },
+    baseUrl: null,
+  });
   const server = app.listen(0, '127.0.0.1');
-  await new Promise((resolve) => server.once('listening', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
-  const origin = `http://127.0.0.1:${server.address().port}`;
+  await new Promise<void>((resolve) => server.once('listening', resolve));
+  t.after(
+    () =>
+      new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      ),
+  );
+  const origin = localOrigin(server);
   for (const [path, status] of [
     ['/api/health', 503],
     ['/api/links', 500],

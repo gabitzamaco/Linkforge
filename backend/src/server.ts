@@ -1,4 +1,4 @@
-import { createApp } from './app.js';
+import { createApp } from './app.ts';
 
 const port = Number(process.env.PORT || 3000);
 if (!Number.isInteger(port) || port < 1 || port > 65535) {

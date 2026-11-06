@@ -1,10 +1,10 @@
 ﻿# Linkforge
 
-A URL shortener built with React, Express, and Neon serverless Postgres. Create short links with generated or custom codes, copy them from the dashboard, edit their destinations, view daily click history, and delete links you no longer need. Links and statistics live in Postgres and survive server restarts.
+A URL shortener built with TypeScript, React, Express, and Neon serverless Postgres. Create short links with generated or custom codes, copy them from the dashboard, edit their destinations, view daily click history, and delete links you no longer need. Links and statistics live in Postgres and survive server restarts.
 
 ## Requirements
 
-- Node.js 24 or newer and npm.
+- Node.js 24.15 or newer in the 24.x release line, or Node.js 26 or newer, and npm. Node 24 LTS is used in CI. The minimum includes the requirements of the existing jsdom test dependencies.
 - A Neon project with pooled and direct Postgres connection strings. The backend uses `@neondatabase/serverless` over HTTPS; no local database server is required for development or tests.
 - Run commands from the repository root.
 
@@ -40,18 +40,19 @@ If the Neon CLI is already signed in, refresh this project's credentials with `n
 
 ## Commands
 
-| Command                                         | Purpose                                                          |
-| ----------------------------------------------- | ---------------------------------------------------------------- |
-| `npm run dev`                                   | Run the React frontend and API together with development reload. |
-| `npm run build`                                 | Create the production frontend in `frontend/dist/`.              |
-| `npm start`                                     | Run Express and serve the built frontend on port 3000.           |
-| `npm run db:migrate`                            | Apply versioned SQL migrations using the direct Neon URL.        |
-| `npm run db:import:sqlite -- data/links.sqlite` | Import an existing SQLite database and verify saved values.      |
-| `npm test`                                      | Run backend integration and frontend component tests.            |
-| `npm run test:backend`                          | Run HTTP API and database tests using Node's test runner.        |
-| `npm run test:frontend`                         | Run React component tests using Vitest and jsdom.                |
-| `npm run lint`                                  | Check JavaScript and JSX style and correctness.                  |
-| `npm run format:check`                          | Check formatting without modifying files.                        |
+| Command                                         | Purpose                                                                |
+| ----------------------------------------------- | ---------------------------------------------------------------------- |
+| `npm run dev`                                   | Run the React frontend and API together with development reload.       |
+| `npm run build`                                 | Typecheck all application code and tests, then build `frontend/dist/`. |
+| `npm start`                                     | Run Express and serve the built frontend on port 3000.                 |
+| `npm run db:migrate`                            | Apply versioned SQL migrations using the direct Neon URL.              |
+| `npm run db:import:sqlite -- data/links.sqlite` | Import an existing SQLite database and verify saved values.            |
+| `npm test`                                      | Run backend integration and frontend component tests.                  |
+| `npm run test:backend`                          | Run HTTP API and database tests using Node's test runner.              |
+| `npm run test:frontend`                         | Run React component tests using Vitest and jsdom.                      |
+| `npm run typecheck`                             | Check backend, scripts, API contracts, frontend, and both test suites. |
+| `npm run lint`                                  | Check TypeScript, TSX, and JavaScript tool configuration.              |
+| `npm run format:check`                          | Check formatting without modifying files.                              |
 
 For a local production build:
 
@@ -62,28 +63,40 @@ npm start
 
 Then open **http://127.0.0.1:3000**. Build again after changing the frontend.
 
+### TypeScript development
+
+The backend, CLI scripts, and backend tests run directly with Node's native TypeScript type stripping; no server compilation or TypeScript runtime loader is needed. Use explicit `.ts` extensions for Node imports, `.tsx` for React component imports, and `import type` for types. Keep Node-executed code to erasable syntax: avoid enums, parameter properties, and runtime path aliases.
+
+`tsconfig.base.json` supplies strict checking, including nullable values and unchecked array/index access. The root `tsconfig.json` checks Node modules using NodeNext resolution. `frontend/tsconfig.json` checks browser code and component tests using Bundler resolution and React JSX. `shared/types.ts` contains type-only HTTP contracts imported by both sides, while `backend/src/types.ts` defines the database and store interfaces. Tool configurations stay in JavaScript; the Node configuration permits importing them without enabling JavaScript checking.
+
+Node, Vite, and the test runners execute or transpile TypeScript without checking types. Run `npm run typecheck` while developing; `npm run build` runs it automatically before bundling, and CI gates changes on that build. TypeScript 6.0 is pinned to its minor release line to stay within the installed TypeScript ESLint tooling's supported range. Type annotations do not validate JSON or SQL at runtime; request validation remains in the Express routes.
+
 ## Project structure
 
 ```text
 frontend/
   index.html          Browser entry point
-  src/                React dashboard, history dialog, component tests, CSS, and test setup
+  src/                TSX dashboard, history dialog, component tests, CSS, and TypeScript test setup
+  tsconfig.json       Browser/component test type checking
   vite.config.js      Development proxy and frontend build
   vitest.config.js    Isolated frontend component test configuration
 backend/
-  src/                Express routes, Neon queries, migrations, import logic, and server startup
+  src/                TypeScript Express routes, Neon queries, migrations, import logic, and startup
   migrations/         Versioned Postgres SQL schema changes
 scripts/              Schema migration and one-time SQLite import commands
-api/index.js          Vercel Function entry point for the existing Express API
+shared/types.ts       Shared type-only API request and response contracts
+tsconfig.base.json    Common strict TypeScript settings
+tsconfig.json         Node backend, API, CLI, and integration test type checking
+api/index.ts          Vercel Function entry point for the existing Express API
 vercel.json           Vite build output and API/short-link routing on Vercel
 .vercelignore         Excludes local credentials, databases, tools, and test files from uploads
 tests/
-  api.test.js         HTTP integration and Postgres persistence tests
-  database.test.js    Migration, import, concurrency, and failure handling tests
-  history.test.js     UTC click history, API, migration, atomicity, and persistence tests
+  api.test.ts         HTTP integration and Postgres persistence tests
+  database.test.ts    Migration, import, concurrency, and failure handling tests
+  history.test.ts     UTC click history, API, migration, atomicity, and persistence tests
   helpers/            Embedded Postgres test database adapter
-  vercel.test.js      HTTPS short URL behavior for production and preview deployments
-  dev.test.js         React module loading and development proxy regression test
+  vercel.test.ts      HTTPS short URL behavior for production and preview deployments
+  dev.test.ts         TSX module loading and development proxy regression test
 data/                 Original SQLite files retained for migration/backup; ignored by Git
 .env.example          Safe configuration examples
 AGENTS.md             Contributor guidelines
@@ -184,7 +197,7 @@ For manual verification, create a link, copy and open it, and refresh the dashbo
 
 ### Vercel
 
-Deploy from the repository root. `vercel.json` selects the Vite framework, runs `npm run build`, and publishes `frontend/dist/`. The frontend is served as static files; requests to `/api/*` and `/s/*` run the existing Express application through `api/index.js` as a Vercel Function. The local server entry point is not used on Vercel.
+Deploy from the repository root. `vercel.json` selects the Vite framework, runs `npm run build`, and publishes `frontend/dist/`. The frontend is served as static files; requests to `/api/*` and `/s/*` run the existing Express application through `api/index.ts` as a Vercel Function. The local server entry point is not used on Vercel.
 
 1. Import this repository into a Vercel project, or link it using the Vercel CLI.
 2. Add `DATABASE_URL` as a server-side **Production** environment variable using the pooled URL for the existing Neon main branch. Use an isolated Neon branch if enabling Preview deployments for development.

@@ -4,23 +4,27 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { createApp } from '../backend/src/app.js';
-import { createStore } from '../backend/src/store.js';
-import { testDatabase } from './helpers/database.js';
+import type { TestContext } from 'node:test';
+import type { AppOptions } from '../backend/src/app.ts';
+import type { ApiErrorResponse, CreateLinkResponse, LinksResponse } from '../shared/types.ts';
+import { localOrigin, readJson, required } from './helpers/http.ts';
+import { createApp } from '../backend/src/app.ts';
+import { createStore } from '../backend/src/store.ts';
+import { testDatabase } from './helpers/database.ts';
 
-async function startApp(t, options = {}) {
+async function startApp(t: TestContext, options: AppOptions & { dataDir?: string } = {}) {
   const { dataDir, ...appOptions } = options;
   const database = await testDatabase(dataDir);
   const app = createApp({ store: createStore(database), baseUrl: null, ...appOptions });
   const server = app.listen(0, '127.0.0.1');
   await once(server, 'listening');
-  const origin = `http://127.0.0.1:${server.address().port}`;
+  const origin = localOrigin(server);
   let closed = false;
 
   async function close() {
     if (closed) return;
     closed = true;
-    await new Promise((resolve, reject) => {
+    await new Promise<void>((resolve, reject) => {
       server.close((error) => (error ? reject(error) : resolve()));
     });
     await app.locals.store.close();
@@ -31,8 +35,8 @@ async function startApp(t, options = {}) {
   return {
     origin,
     close,
-    request: (path, options) => fetch(`${origin}${path}`, options),
-    create: (body) =>
+    request: (path: string, options?: RequestInit) => fetch(`${origin}${path}`, options),
+    create: (body: unknown) =>
       fetch(`${origin}/api/links`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -41,10 +45,10 @@ async function startApp(t, options = {}) {
   };
 }
 
-async function assertError(response, status) {
+async function assertError(response: Response, status: number) {
   assert.equal(response.status, status);
-  assert.match(response.headers.get('content-type'), /application\/json/);
-  const body = await response.json();
+  assert.match(response.headers.get('content-type') ?? '', /application\/json/);
+  const body = await readJson<ApiErrorResponse>(response);
   assert.equal(typeof body.error, 'string');
   assert.ok(body.error.length > 0);
 }
@@ -66,7 +70,7 @@ test('creates a generated short link with destination and initial statistics', a
   const response = await api.create({ url });
   assert.equal(response.status, 201);
 
-  const { link } = await response.json();
+  const { link } = await readJson<CreateLinkResponse>(response);
   assert.ok(link.id);
   assert.match(link.code, /^[A-Za-z0-9_-]{3,32}$/);
   assert.equal(link.url, url);
@@ -75,7 +79,7 @@ test('creates a generated short link with destination and initial statistics', a
   assert.equal(link.lastClickedAt, null);
   assert.ok(Number.isFinite(Date.parse(link.createdAt)));
 
-  const { links } = await (await api.request('/api/links')).json();
+  const { links } = await readJson<LinksResponse>(await api.request('/api/links'));
   assert.deepEqual(links, [link]);
 });
 
@@ -86,7 +90,7 @@ test('uses the configured public origin when building short URLs', async (t) => 
     customCode: 'release_2026',
   });
   assert.equal(response.status, 201);
-  const { link } = await response.json();
+  const { link } = await readJson<CreateLinkResponse>(response);
   assert.equal(link.code, 'release_2026');
   assert.equal(link.shortUrl, 'https://links.example.com/s/release_2026');
 });
@@ -96,7 +100,7 @@ test('accepts valid custom codes at both length boundaries', async (t) => {
   for (const customCode of ['a-B', 'a'.repeat(32)]) {
     const response = await api.create({ url: 'https://example.com/', customCode });
     assert.equal(response.status, 201);
-    assert.equal((await response.json()).link.code, customCode);
+    assert.equal((await readJson<CreateLinkResponse>(response)).link.code, customCode);
   }
 });
 
@@ -124,7 +128,7 @@ test('rejects missing, unsupported, credential-bearing, and non-string destinati
   for (const body of bodies) {
     await assertError(await api.create(body), 400);
   }
-  assert.deepEqual(await (await api.request('/api/links')).json(), { links: [] });
+  assert.deepEqual(await readJson<LinksResponse>(await api.request('/api/links')), { links: [] });
 });
 
 test('rejects custom codes with invalid lengths, characters, or types', async (t) => {
@@ -156,9 +160,9 @@ test('duplicate custom codes return conflict without replacing the original dest
     await api.create({ url: 'https://example.com/replacement', customCode: 'same-code' }),
     409,
   );
-  const { links } = await (await api.request('/api/links')).json();
+  const { links } = await readJson<LinksResponse>(await api.request('/api/links'));
   assert.equal(links.length, 1);
-  assert.equal(links[0].url, 'https://example.com/original');
+  assert.equal(required(links[0]).url, 'https://example.com/original');
 });
 
 test('concurrent requests for one alias create exactly one link', async (t) => {
@@ -169,7 +173,7 @@ test('concurrent requests for one alias create exactly one link', async (t) => {
   ]);
   assert.deepEqual(results.map((response) => response.status).sort(), [201, 409]);
   await Promise.all(results.map((response) => response.json()));
-  const { links } = await (await api.request('/api/links')).json();
+  const { links } = await readJson<LinksResponse>(await api.request('/api/links'));
   assert.equal(links.length, 1);
 });
 
@@ -186,9 +190,9 @@ test('redirects to the saved destination and records every visit', async (t) => 
     assert.equal(response.headers.get('location'), url);
     await response.text();
 
-    const { links } = await (await api.request('/api/links')).json();
-    assert.equal(links[0].clicks, count);
-    assert.ok(Number.isFinite(Date.parse(links[0].lastClickedAt)));
+    const { links } = await readJson<LinksResponse>(await api.request('/api/links'));
+    assert.equal(required(links[0]).clicks, count);
+    assert.ok(Number.isFinite(Date.parse(required(required(links[0]).lastClickedAt))));
   }
 });
 
@@ -203,9 +207,9 @@ test('HEAD requests inspect redirects without incrementing click counts', async 
   assert.equal(response.headers.get('location'), 'https://example.com/check');
   assert.equal(response.headers.get('cache-control'), 'no-store');
   assert.equal(await response.text(), '');
-  const { links } = await (await api.request('/api/links')).json();
-  assert.equal(links[0].clicks, 0);
-  assert.equal(links[0].lastClickedAt, null);
+  const { links } = await readJson<LinksResponse>(await api.request('/api/links'));
+  assert.equal(required(links[0]).clicks, 0);
+  assert.equal(required(links[0]).lastClickedAt, null);
 });
 
 test('encoded control characters remain encoded and cannot inject response headers', async (t) => {
@@ -229,7 +233,7 @@ test('list returns multiple links in newest-first order', async (t) => {
     assert.equal(created.status, 201);
     await created.json();
   }
-  const { links } = await (await api.request('/api/links')).json();
+  const { links } = await readJson<LinksResponse>(await api.request('/api/links'));
   assert.deepEqual(
     links.map((link) => link.code),
     ['third', 'second', 'first'],
@@ -246,8 +250,9 @@ test('updating a destination preserves the short URL and statistics and changes 
   await visit.text();
   const {
     links: [original],
-  } = await (await api.request('/api/links')).json();
+  } = await readJson<LinksResponse>(await api.request('/api/links'));
 
+  assert.ok(original);
   const url = 'https://example.com/updated?source=linkforge#details';
   const response = await api.request('/api/links/editable', {
     method: 'PATCH',
@@ -255,9 +260,9 @@ test('updating a destination preserves the short URL and statistics and changes 
     body: JSON.stringify({ url: `  ${url}  ` }),
   });
   assert.equal(response.status, 200);
-  assert.match(response.headers.get('content-type'), /application\/json/);
+  assert.match(response.headers.get('content-type') ?? '', /application\/json/);
   assert.deepEqual(await response.json(), { data: { ...original, url } });
-  assert.deepEqual(await (await api.request('/api/links')).json(), {
+  assert.deepEqual(await readJson<LinksResponse>(await api.request('/api/links')), {
     links: [{ ...original, url }],
   });
 
@@ -265,15 +270,15 @@ test('updating a destination preserves the short URL and statistics and changes 
   assert.equal(redirect.status, 302);
   assert.equal(redirect.headers.get('location'), url);
   await redirect.text();
-  const { links } = await (await api.request('/api/links')).json();
-  assert.equal(links[0].clicks, 2);
+  const { links } = await readJson<LinksResponse>(await api.request('/api/links'));
+  assert.equal(required(links[0]).clicks, 2);
 });
 
 test('updating an unknown code returns 404 without creating or changing links', async (t) => {
   const api = await startApp(t);
   const created = await api.create({ url: 'https://example.com/kept', customCode: 'keep-me' });
   assert.equal(created.status, 201);
-  const { link } = await created.json();
+  const { link } = await readJson<CreateLinkResponse>(created);
 
   const response = await api.request('/api/links/missing', {
     method: 'PATCH',
@@ -281,9 +286,11 @@ test('updating an unknown code returns 404 without creating or changing links', 
     body: JSON.stringify({ url: 'https://example.com/replacement' }),
   });
   assert.equal(response.status, 404);
-  assert.match(response.headers.get('content-type'), /application\/json/);
+  assert.match(response.headers.get('content-type') ?? '', /application\/json/);
   assert.deepEqual(await response.json(), { error: 'This short link does not exist.' });
-  assert.deepEqual(await (await api.request('/api/links')).json(), { links: [link] });
+  assert.deepEqual(await readJson<LinksResponse>(await api.request('/api/links')), {
+    links: [link],
+  });
 });
 
 test('invalid updates return 400 and preserve the existing destination', async (t) => {
@@ -293,7 +300,7 @@ test('invalid updates return 400 and preserve the existing destination', async (
     customCode: 'unchanged',
   });
   assert.equal(created.status, 201);
-  const { link } = await created.json();
+  const { link } = await readJson<CreateLinkResponse>(created);
 
   for (const body of [
     {},
@@ -319,7 +326,9 @@ test('invalid updates return 400 and preserve the existing destination', async (
       400,
     );
   }
-  assert.deepEqual(await (await api.request('/api/links')).json(), { links: [link] });
+  assert.deepEqual(await readJson<LinksResponse>(await api.request('/api/links')), {
+    links: [link],
+  });
 });
 
 test('deleting a link removes it from the dashboard and disables the redirect', async (t) => {
@@ -331,7 +340,7 @@ test('deleting a link removes it from the dashboard and disables the redirect', 
   const removed = await api.request('/api/links/remove-me', { method: 'DELETE' });
   assert.equal(removed.status, 204);
   assert.equal(await removed.text(), '');
-  assert.deepEqual(await (await api.request('/api/links')).json(), { links: [] });
+  assert.deepEqual(await readJson<LinksResponse>(await api.request('/api/links')), { links: [] });
   assert.equal((await api.request('/s/remove-me', { redirect: 'manual' })).status, 404);
   await assertError(await api.request('/api/links/remove-me', { method: 'DELETE' }), 404);
 });
@@ -372,7 +381,7 @@ test('links, destination updates, and click counts survive closing and reopening
     customCode: 'persistent',
   });
   assert.equal(created.status, 201);
-  const { link: original } = await created.json();
+  const { link: original } = await readJson<CreateLinkResponse>(created);
   const visit = await api.request('/s/persistent', { redirect: 'manual' });
   assert.equal(visit.status, 302);
   await visit.text();
@@ -388,13 +397,13 @@ test('links, destination updates, and click counts survive closing and reopening
 
   const reopened = await startApp(t, { dataDir });
   try {
-    const { links } = await (await reopened.request('/api/links')).json();
+    const { links } = await readJson<LinksResponse>(await reopened.request('/api/links'));
     assert.equal(links.length, 1);
-    assert.equal(links[0].id, original.id);
-    assert.equal(links[0].url, updatedUrl);
-    assert.equal(links[0].createdAt, original.createdAt);
-    assert.equal(links[0].clicks, 1);
-    assert.ok(Number.isFinite(Date.parse(links[0].lastClickedAt)));
+    assert.equal(required(links[0]).id, original.id);
+    assert.equal(required(links[0]).url, updatedUrl);
+    assert.equal(required(links[0]).createdAt, original.createdAt);
+    assert.equal(required(links[0]).clicks, 1);
+    assert.ok(Number.isFinite(Date.parse(required(required(links[0]).lastClickedAt))));
   } finally {
     await reopened.close();
     await rm(directory, { recursive: true, force: true });

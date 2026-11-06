@@ -3,20 +3,23 @@ import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { createServer } from 'vite';
-import { createApp } from '../backend/src/app.js';
-import { createStore } from '../backend/src/store.js';
-import { testDatabase } from './helpers/database.js';
+import { createApp } from '../backend/src/app.ts';
+import { createStore } from '../backend/src/store.ts';
+import { testDatabase } from './helpers/database.ts';
 import frontendConfig from '../frontend/vite.config.js';
+import { localOrigin, required } from './helpers/http.ts';
 
 test('development serves React modules as JavaScript and proxies API calls and short links', async (t) => {
   const app = createApp({ store: createStore(await testDatabase()), baseUrl: null });
   const backend = app.listen(0, '127.0.0.1');
   t.after(async () => {
-    await new Promise((resolve) => backend.close(resolve));
+    await new Promise<void>((resolve, reject) =>
+      backend.close((error) => (error ? reject(error) : resolve())),
+    );
     await app.locals.store.close();
   });
   await once(backend, 'listening');
-  const backendOrigin = `http://127.0.0.1:${backend.address().port}`;
+  const backendOrigin = localOrigin(backend);
   const frontend = await createServer({
     ...frontendConfig,
     configFile: false,
@@ -28,18 +31,18 @@ test('development serves React modules as JavaScript and proxies API calls and s
       strictPort: false,
       ws: false,
       proxy: Object.fromEntries(
-        Object.keys(frontendConfig.server.proxy).map((path) => [path, backendOrigin]),
+        Object.keys(frontendConfig.server?.proxy ?? {}).map((path) => [path, backendOrigin]),
       ),
     },
   });
   t.after(() => frontend.close());
   await frontend.listen();
-  const origin = `http://127.0.0.1:${frontend.httpServer.address().port}`;
+  const origin = localOrigin(required(frontend.httpServer));
 
-  for (const path of ['/src/main.jsx', '/src/App.jsx']) {
+  for (const path of ['/src/main.tsx', '/src/App.tsx']) {
     const response = await fetch(`${origin}${path}`);
     assert.equal(response.status, 200);
-    assert.match(response.headers.get('content-type'), /javascript/);
+    assert.match(response.headers.get('content-type') ?? '', /javascript/);
     assert.doesNotMatch(await response.text(), /^<!doctype html>/i);
   }
 

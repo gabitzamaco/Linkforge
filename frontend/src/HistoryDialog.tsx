@@ -1,6 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
+import type {
+  HistoryBucket,
+  HistoryDays,
+  HistoryResponse,
+  Link,
+  LinkHistory,
+} from '../../shared/types.ts';
 
-function formatUtcDate(value) {
+function formatUtcDate(value: string) {
   return new Date(`${value}T00:00:00Z`).toLocaleDateString(undefined, {
     month: 'short',
     day: 'numeric',
@@ -9,7 +16,10 @@ function formatUtcDate(value) {
   });
 }
 
-function DailyChart({ buckets }) {
+function DailyChart({ buckets }: { buckets: HistoryBucket[] }) {
+  const firstBucket = buckets[0];
+  const lastBucket = buckets.at(-1);
+  if (!firstBucket || !lastBucket) return null;
   const maximum = Math.max(1, ...buckets.map((bucket) => bucket.clicks ?? 0));
   const step = 580 / buckets.length;
   return (
@@ -42,10 +52,10 @@ function DailyChart({ buckets }) {
           );
         })}
         <text x="48" y="198">
-          {formatUtcDate(buckets[0].date)}
+          {formatUtcDate(firstBucket.date)}
         </text>
         <text x="628" y="198" textAnchor="end">
-          {formatUtcDate(buckets.at(-1).date)}
+          {formatUtcDate(lastBucket.date)}
         </text>
       </svg>
       <figcaption>Daily redirect requests · UTC · Today is a partial day.</figcaption>
@@ -53,23 +63,33 @@ function DailyChart({ buckets }) {
   );
 }
 
-export default function HistoryDialog({ link, onClose }) {
-  const dialogRef = useRef(null);
-  const closeRef = useRef(null);
-  const [days, setDays] = useState(30);
+interface HistoryDialogProps {
+  link: Link;
+  onClose: () => void;
+}
+
+type HistoryResult =
+  | { key: string; status: 'success'; history: LinkHistory }
+  | { key: string; status: 'error'; error: string; missing: boolean };
+
+export default function HistoryDialog({ link, onClose }: HistoryDialogProps) {
+  const dialogRef = useRef<HTMLDialogElement | null>(null);
+  const closeRef = useRef<HTMLButtonElement | null>(null);
+  const [days, setDays] = useState<HistoryDays>(30);
   const [revision, setRevision] = useState(0);
-  const [result, setResult] = useState(null);
+  const [result, setResult] = useState<HistoryResult | null>(null);
   const requestKey = `${link.code}/${days}/${revision}`;
   const current = result?.key === requestKey ? result : null;
 
   useEffect(() => {
     const dialog = dialogRef.current;
+    if (!dialog) return;
     const trigger = document.activeElement;
     dialog.showModal();
     closeRef.current?.focus();
     return () => {
       dialog.close();
-      if (trigger?.isConnected) trigger.focus();
+      if (trigger instanceof HTMLElement && trigger.isConnected) trigger.focus();
     };
   }, []);
 
@@ -82,20 +102,33 @@ export default function HistoryDialog({ link, onClose }) {
           `/api/links/${encodeURIComponent(link.code)}/history?days=${days}`,
           { signal: controller.signal },
         );
-        const data = await response.json();
+        const data: unknown = await response.json();
         if (!active) return;
         if (!response.ok) {
           setResult({
             key: requestKey,
-            error: data.error || 'Could not load click history.',
+            status: 'error',
+            error:
+              data && typeof data === 'object' && 'error' in data && typeof data.error === 'string'
+                ? data.error || 'Could not load click history.'
+                : 'Could not load click history.',
             missing: response.status === 404,
           });
         } else {
-          setResult({ key: requestKey, history: data.history });
+          setResult({
+            key: requestKey,
+            status: 'success',
+            history: (data as HistoryResponse).history,
+          });
         }
       } catch (error) {
-        if (active && error.name !== 'AbortError') {
-          setResult({ key: requestKey, error: 'Could not load click history. Please try again.' });
+        if (active && !(error instanceof Error && error.name === 'AbortError')) {
+          setResult({
+            key: requestKey,
+            status: 'error',
+            error: 'Could not load click history. Please try again.',
+            missing: false,
+          });
         }
       }
     }
@@ -106,7 +139,8 @@ export default function HistoryDialog({ link, onClose }) {
     };
   }, [link.code, days, requestKey]);
 
-  const history = current?.history;
+  const history = current?.status === 'success' ? current.history : null;
+  const failure = current?.status === 'error' ? current : null;
   return (
     <dialog
       ref={dialogRef}
@@ -136,7 +170,9 @@ export default function HistoryDialog({ link, onClose }) {
           id="history-range"
           value={days}
           onChange={(event) => {
-            setDays(Number(event.target.value));
+            const nextDays = Number(event.target.value);
+            if (nextDays !== 7 && nextDays !== 30) return;
+            setDays(nextDays);
             setRevision((value) => value + 1);
           }}
         >
@@ -146,7 +182,7 @@ export default function HistoryDialog({ link, onClose }) {
         <button
           type="button"
           className="secondary-button"
-          disabled={!current || current.missing}
+          disabled={!current || failure?.missing}
           onClick={() => setRevision((value) => value + 1)}
         >
           Refresh
@@ -154,14 +190,14 @@ export default function HistoryDialog({ link, onClose }) {
       </div>
       <div aria-busy={!current}>
         {!current && <p role="status">Loading click history…</p>}
-        {current?.error && (
+        {failure?.error && (
           <div className="history-error" role="alert">
             <p>
-              {current.missing
+              {failure.missing
                 ? 'This link no longer exists. Close this window to return to your collection.'
-                : current.error}
+                : failure.error}
             </p>
-            {!current.missing && (
+            {!failure.missing && (
               <button
                 className="secondary-button"
                 type="button"
