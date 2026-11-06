@@ -1,18 +1,20 @@
 import { after } from 'node:test';
 import { PGlite } from '@electric-sql/pglite';
-import { migrate } from '../../backend/src/migrate.js';
+import { migrate } from '../../backend/src/migrate.ts';
+import type { Database } from '../../backend/src/types.ts';
 
-let shared;
+let shared: Promise<Database> | undefined;
 
-async function openDatabase(dataDir) {
+async function openDatabase(dataDir?: string): Promise<Database> {
   const client = await PGlite.create(dataDir);
-  const database = {
-    query: async (text, values = []) => (await client.query(text, values)).rows,
+  const database: Database = {
+    query: async <Row extends object>(text: string, values: unknown[] = []) =>
+      (await client.query<Row>(text, values)).rows,
     transaction: (queries) =>
       client.transaction(async (tx) => {
-        const results = [];
+        const results: Record<string, unknown>[][] = [];
         for (const { text, values = [] } of queries) {
-          results.push((await tx.query(text, values)).rows);
+          results.push((await tx.query<Record<string, unknown>>(text, values)).rows);
         }
         return results;
       }),
@@ -22,7 +24,7 @@ async function openDatabase(dataDir) {
   return database;
 }
 
-export async function testDatabase(dataDir) {
+export async function testDatabase(dataDir?: string): Promise<Database> {
   if (dataDir) return openDatabase(dataDir);
   shared ||= openDatabase();
   const database = await shared;

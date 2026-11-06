@@ -1,6 +1,7 @@
 import { neon } from '@neondatabase/serverless';
+import type { Database } from './types.ts';
 
-export function createDatabase(databaseUrl = process.env.DATABASE_URL) {
+export function createDatabase(databaseUrl = process.env.DATABASE_URL): Database {
   if (!databaseUrl) {
     throw new Error('DATABASE_URL is required. Add your Neon connection string to .env.');
   }
@@ -26,7 +27,9 @@ export function createDatabase(databaseUrl = process.env.DATABASE_URL) {
     throw new Error('DATABASE_URL must be a valid PostgreSQL connection string.');
   }
   return {
-    query: (text, values = []) => sql.query(text, values),
+    // Neon cannot infer result columns from SQL; keep that assertion at the adapter boundary.
+    query: async <Row extends object>(text: string, values: unknown[] = []) =>
+      (await sql.query(text, values)) as Row[],
     transaction: (queries) =>
       sql.transaction(queries.map(({ text, values = [] }) => sql.query(text, values))),
     // HTTP queries do not hold a persistent connection or require pool cleanup.

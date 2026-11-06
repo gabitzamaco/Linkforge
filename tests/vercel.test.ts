@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import test from 'node:test';
-import { createVercelApp } from '../backend/src/vercel-app.js';
-import { createStore } from '../backend/src/store.js';
-import { testDatabase } from './helpers/database.js';
+import type { CreateLinkResponse, HistoryResponse, LinksResponse } from '../shared/types.ts';
+import { localOrigin, readJson, required } from './helpers/http.ts';
+import { createVercelApp } from '../backend/src/vercel-app.ts';
+import { createStore } from '../backend/src/store.ts';
+import { testDatabase } from './helpers/database.ts';
 
 const cases = [
   {
@@ -41,9 +43,14 @@ for (const { name, env, origin } of cases) {
     const app = createVercelApp({ env, store });
     const server = app.listen(0, '127.0.0.1');
     await once(server, 'listening');
-    t.after(() => new Promise((resolve) => server.close(resolve)));
-    const localOrigin = `http://127.0.0.1:${server.address().port}`;
-    const created = await fetch(`${localOrigin}/api/links`, {
+    t.after(
+      () =>
+        new Promise<void>((resolve, reject) =>
+          server.close((error) => (error ? reject(error) : resolve())),
+        ),
+    );
+    const originAddress = localOrigin(server);
+    const created = await fetch(`${originAddress}/api/links`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -52,26 +59,26 @@ for (const { name, env, origin } of cases) {
       }),
     });
     assert.equal(created.status, 201);
-    const { link } = await created.json();
+    const { link } = await readJson<CreateLinkResponse>(created);
     assert.equal(link.shortUrl, `${origin}/s/deployment-test`);
-    const list = await (await fetch(`${localOrigin}/api/links`)).json();
-    assert.equal(list.links[0].shortUrl, link.shortUrl);
+    const list = await readJson<LinksResponse>(await fetch(`${originAddress}/api/links`));
+    assert.equal(required(list.links[0]).shortUrl, link.shortUrl);
     for (const days of [undefined, '7', '30']) {
       const query = new URLSearchParams({ path: 'links/deployment-test/history' });
       if (days) query.set('days', days);
-      const response = await fetch(`${localOrigin}/api/links/deployment-test/history?${query}`);
+      const response = await fetch(`${originAddress}/api/links/deployment-test/history?${query}`);
       assert.equal(response.status, 200);
-      const { history } = await response.json();
+      const { history } = await readJson<HistoryResponse>(response);
       assert.equal(history.buckets.length, Number(days || 30));
       assert.equal(history.periodClicks, 0);
     }
     for (const query of ['days=14', 'days=7&days=30', 'days[]=7', 'other=7']) {
       const response = await fetch(
-        `${localOrigin}/api/links/deployment-test/history?path=links/deployment-test/history&${query}`,
+        `${originAddress}/api/links/deployment-test/history?path=links/deployment-test/history&${query}`,
       );
       assert.equal(response.status, 400);
     }
-    const redirect = await fetch(`${localOrigin}/s/deployment-test`, { redirect: 'manual' });
+    const redirect = await fetch(`${originAddress}/s/deployment-test`, { redirect: 'manual' });
     assert.equal(redirect.status, 302);
     assert.equal(redirect.headers.get('location'), 'https://example.com/destination');
     await redirect.text();

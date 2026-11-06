@@ -1,5 +1,5 @@
-import { createDatabase } from '../backend/src/database.js';
-import { migrate } from '../backend/src/migrate.js';
+import { createDatabase } from '../backend/src/database.ts';
+import { migrate } from '../backend/src/migrate.ts';
 
 if (!process.env.DATABASE_URL_UNPOOLED) {
   throw new Error(

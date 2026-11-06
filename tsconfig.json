@@ -1,0 +1,18 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2023"],
+    "types": ["node"],
+    "allowJs": true,
+    "checkJs": false
+  },
+  "include": [
+    "backend/src/**/*.ts",
+    "api/**/*.ts",
+    "scripts/**/*.ts",
+    "tests/**/*.ts",
+    "shared/**/*.ts"
+  ]
+}

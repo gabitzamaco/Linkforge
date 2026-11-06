@@ -4,18 +4,22 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { createApp } from '../backend/src/app.js';
-import { createStore } from '../backend/src/store.js';
-import { migrate } from '../backend/src/migrate.js';
-import { testDatabase } from './helpers/database.js';
+import type { TestContext } from 'node:test';
+import type { Database, Store } from '../backend/src/types.ts';
+import type { ApiErrorResponse, HistoryResponse } from '../shared/types.ts';
+import { localOrigin, readJson, required } from './helpers/http.ts';
+import { createApp } from '../backend/src/app.ts';
+import { createStore } from '../backend/src/store.ts';
+import { migrate } from '../backend/src/migrate.ts';
+import { testDatabase } from './helpers/database.ts';
 
 // Override the SQL clock only in tests; production always uses PostgreSQL time.
-function storeAt(database, timestamp) {
+function storeAt(database: Database, timestamp: string) {
   return createStore({
     ...database,
-    query(text, values = []) {
-      if (!text.includes('statement_timestamp()')) return database.query(text, values);
-      return database.query(
+    query<Row extends object>(text: string, values: unknown[] = []) {
+      if (!text.includes('statement_timestamp()')) return database.query<Row>(text, values);
+      return database.query<Row>(
         text.replaceAll('statement_timestamp()', `$${values.length + 1}::timestamptz`),
         [...values, timestamp],
       );
@@ -24,7 +28,7 @@ function storeAt(database, timestamp) {
 }
 
 async function seedLink(
-  database,
+  database: Database,
   { code = 'history', startedAt = '2026-11-02T12:00:00Z', clicks = 0 } = {},
 ) {
   await database.query(
@@ -34,12 +38,17 @@ async function seedLink(
   );
 }
 
-async function startApi(t, store) {
+async function startApi(t: TestContext, store: Store) {
   const server = createApp({ store, baseUrl: null }).listen(0, '127.0.0.1');
   await once(server, 'listening');
-  t.after(() => new Promise((resolve) => server.close(resolve)));
-  const origin = `http://127.0.0.1:${server.address().port}`;
-  return (path, options) => fetch(`${origin}${path}`, options);
+  t.after(
+    () =>
+      new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      ),
+  );
+  const origin = localOrigin(server);
+  return (path: string, options?: RequestInit) => fetch(`${origin}${path}`, options);
 }
 
 test('migration preserves legacy totals without inventing daily history and is repeatable', async () => {
@@ -56,14 +65,14 @@ test('migration preserves legacy totals without inventing daily history and is r
   );
   try {
     assert.deepEqual(await migrate(database), ['003-click-history.sql', '004-daily-clicks.sql']);
-    const link = await createStore(database).get('legacy');
+    const link = required(await createStore(database).get('legacy'));
     assert.equal(link.clicks, 42);
     assert.equal(link.lastClickedAt, '2026-02-01T00:00:00.000Z');
-    const history = await createStore(database).history('legacy');
+    const history = required(await createStore(database).history('legacy'));
     assert.equal(history.lifetimeClicks, 42);
     assert.equal(history.periodClicks, 0);
     assert.ok(Number.isFinite(Date.parse(history.trackingStartedAt)));
-    assert.equal(history.buckets.at(-1).clicks, 0);
+    assert.equal(required(history.buckets.at(-1)).clicks, 0);
     assert.ok(history.buckets.slice(0, -1).every((bucket) => bucket.clicks === null));
     assert.deepEqual(await database.query('SELECT * FROM link_click_daily'), []);
     assert.deepEqual(await migrate(database), []);
@@ -77,11 +86,11 @@ test('concurrent visits increment both counters and use database time for last c
   await seedLink(database);
   const store = storeAt(database, '2026-11-05T10:30:00Z');
   await Promise.all(Array.from({ length: 20 }, () => store.visit('history')));
-  const history = await store.history('history', 7);
+  const history = required(await store.history('history', 7));
   assert.equal(history.lifetimeClicks, 20);
   assert.equal(history.periodClicks, 20);
-  assert.equal(history.buckets.at(-1).clicks, 20);
-  assert.equal((await store.get('history')).lastClickedAt, '2026-11-05T10:30:00.000Z');
+  assert.equal(required(history.buckets.at(-1)).clicks, 20);
+  assert.equal(required(await store.get('history')).lastClickedAt, '2026-11-05T10:30:00.000Z');
   assert.equal(await store.visit('missing'), null);
   assert.equal((await database.query('SELECT * FROM link_click_daily')).length, 1);
 });
@@ -96,12 +105,12 @@ test('UTC midnight splits buckets independently of session timezone and last cli
     // A request timestamp captured before a lock wait must not move last click backwards.
     await storeAt(database, '2026-11-04T23:59:59.999Z').visit('history');
     const store = storeAt(database, '2026-11-05T00:00:01Z');
-    const history = await store.history('history', 7);
+    const history = required(await store.history('history', 7));
     assert.deepEqual(history.buckets.slice(-2), [
       { date: '2026-11-04', clicks: 2, partial: false },
       { date: '2026-11-05', clicks: 1, partial: true },
     ]);
-    assert.equal((await store.get('history')).lastClickedAt, '2026-11-05T00:00:00.000Z');
+    assert.equal(required(await store.get('history')).lastClickedAt, '2026-11-05T00:00:00.000Z');
   } finally {
     await database.query('RESET TIME ZONE');
   }
@@ -112,7 +121,7 @@ test('history distinguishes untracked dates, zero days, partial days and older l
   await seedLink(database, { clicks: 8 });
   await database.query("INSERT INTO link_click_daily VALUES ('history', '2026-11-02', 3)");
   const store = storeAt(database, '2026-11-05T12:00:00Z');
-  const history = await store.history('history', 7);
+  const history = required(await store.history('history', 7));
   assert.equal(history.days, 7);
   assert.equal(history.timezone, 'UTC');
   assert.equal(history.asOf, '2026-11-05T12:00:00.000Z');
@@ -130,9 +139,9 @@ test('history distinguishes untracked dates, zero days, partial days and older l
   ]);
   await database.query("UPDATE links SET history_started_at = '2026-10-01T00:00:00Z'");
   await database.query("INSERT INTO link_click_daily VALUES ('history', '2026-10-01', 5)");
-  assert.equal((await store.history('history', 30)).periodClicks, 3);
+  assert.equal(required(await store.history('history', 30)).periodClicks, 3);
   await database.query("UPDATE links SET history_started_at = '2026-11-02T00:00:00Z'");
-  assert.equal((await store.history('history', 7)).buckets[3].partial, false);
+  assert.equal(required(required(await store.history('history', 7)).buckets[3]).partial, false);
 });
 
 test('a failed daily write rolls back the lifetime increment and last-click update', async () => {
@@ -160,7 +169,7 @@ test('history API validates ranges, returns snapshots, and HEAD and reads do not
     const response = await request(`/api/links/history/history${range}`);
     assert.equal(response.status, 200);
     assert.equal(response.headers.get('cache-control'), 'no-store');
-    const { history } = await response.json();
+    const { history } = await readJson<HistoryResponse>(response);
     assert.equal(history.buckets.length, range === '?days=7' ? 7 : 30);
     assert.equal(history.lifetimeClicks, 0);
   }
@@ -176,7 +185,7 @@ test('history API validates ranges, returns snapshots, and HEAD and reads do not
   ]) {
     const response = await request(`/api/links/history/history?${range}`);
     assert.equal(response.status, 400, range);
-    assert.equal(typeof (await response.json()).error, 'string');
+    assert.equal(typeof (await readJson<ApiErrorResponse>(response)).error, 'string');
   }
   assert.equal((await request('/api/links/missing/history')).status, 404);
   assert.equal((await request('/s/history', { method: 'HEAD', redirect: 'manual' })).status, 302);
@@ -185,7 +194,9 @@ test('history API validates ranges, returns snapshots, and HEAD and reads do not
   assert.equal(response.status, 302);
   assert.equal(response.headers.get('location'), 'https://example.com/original');
   await response.text();
-  const { history } = await (await request('/api/links/history/history?days=7')).json();
+  const { history } = await readJson<HistoryResponse>(
+    await request('/api/links/history/history?days=7'),
+  );
   assert.equal(history.periodClicks, 1);
   assert.equal(history.lifetimeClicks, 1);
 });
@@ -195,27 +206,27 @@ test('destination edits preserve history, deletion cascades and alias reuse star
   await seedLink(database);
   const store = storeAt(database, '2026-11-05T12:00:00Z');
   await store.visit('history');
-  const history = await store.history('history');
+  const history = required(await store.history('history'));
   await store.update('history', 'https://example.com/new');
   assert.deepEqual(await store.history('history'), history);
   await store.delete('history');
   assert.equal(await store.history('history'), null);
   assert.deepEqual(await database.query('SELECT * FROM link_click_daily'), []);
   await store.create({ code: 'history', url: 'https://example.com/reused' });
-  assert.equal((await store.history('history')).lifetimeClicks, 0);
-  assert.equal((await store.history('history')).periodClicks, 0);
+  assert.equal(required(await store.history('history')).lifetimeClicks, 0);
+  assert.equal(required(await store.history('history')).periodClicks, 0);
 });
 
 test('history and tracking start survive database reopening', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'linkforge-history-'));
   const path = join(directory, 'postgres');
-  let database;
+  let database: Database | undefined;
   try {
     database = await testDatabase(path);
     await seedLink(database);
     const store = storeAt(database, '2026-11-05T12:00:00Z');
     await store.visit('history');
-    const history = await store.history('history');
+    const history = required(await store.history('history'));
     await database.close();
     database = await testDatabase(path);
     assert.deepEqual(await storeAt(database, '2026-11-05T12:00:00Z').history('history'), history);
@@ -227,6 +238,7 @@ test('history and tracking start survive database reopening', async () => {
 
 test('history database failures return sanitized JSON errors', async (t) => {
   const request = await startApi(t, {
+    ...createStore(await testDatabase()),
     history: async () => {
       throw new Error('private database secret');
     },

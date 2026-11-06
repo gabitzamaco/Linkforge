@@ -1,6 +1,32 @@
-import { createStore } from './store.js';
+import { createStore } from './store.ts';
+import type { StoredLink } from '../../shared/types.ts';
+import type { Database } from './types.ts';
 
-function sameLink(source, target) {
+export interface LegacyLinkRow {
+  code: string;
+  url: string;
+  created_at: string;
+  clicks: number;
+  last_clicked_at: string | null;
+}
+
+export function parseLegacyLinks(rows: Record<string, unknown>[]): LegacyLinkRow[] {
+  return rows.map((row) => {
+    const { code, url, created_at, clicks, last_clicked_at } = row;
+    if (
+      typeof code !== 'string' ||
+      typeof url !== 'string' ||
+      typeof created_at !== 'string' ||
+      typeof clicks !== 'number' ||
+      (last_clicked_at !== null && typeof last_clicked_at !== 'string')
+    ) {
+      throw new Error('The SQLite source contains invalid link column types.');
+    }
+    return { code, url, created_at, clicks, last_clicked_at };
+  });
+}
+
+function sameLink(source: LegacyLinkRow, target: StoredLink) {
   return (
     source.code === target.code &&
     source.url === target.url &&
@@ -11,12 +37,13 @@ function sameLink(source, target) {
   );
 }
 
-export async function importLinks(database, rows) {
+export async function importLinks(database: Database, rows: LegacyLinkRow[]) {
   if (!rows.length) return { imported: 0, verified: 0 };
   const store = createStore(database);
   const existing = new Map((await store.list()).map((link) => [link.code, link]));
   for (const row of rows) {
-    if (existing.has(row.code) && !sameLink(row, existing.get(row.code))) {
+    const target = existing.get(row.code);
+    if (target && !sameLink(row, target)) {
       throw new Error(
         `Import stopped: existing code ${row.code} has different data. Nothing overwritten.`,
       );
@@ -35,7 +62,8 @@ export async function importLinks(database, rows) {
   );
   const saved = new Map((await store.list()).map((link) => [link.code, link]));
   for (const row of rows) {
-    if (!saved.has(row.code) || !sameLink(row, saved.get(row.code))) {
+    const target = saved.get(row.code);
+    if (!target || !sameLink(row, target)) {
       throw new Error(
         'Import verification failed. Keep the SQLite source and check concurrent writers.',
       );
